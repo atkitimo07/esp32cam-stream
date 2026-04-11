@@ -155,20 +155,6 @@ void handle_root()
   web_server.send(200, "text/html", html);
 }
 
-#ifdef FLASH_LED_GPIO
-void handle_flash()
-{
-  log_v("handle_flash");
-  // If no value present, use off, otherwise convert v to integer. Depends on analog resolution for max value
-  auto v = web_server.hasArg("v") ? web_server.arg("v").toInt() : 0;
-  // If conversion fails, v = 0
-  analogWrite(FLASH_LED_GPIO, v);
-
-  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  web_server.send(200);
-}
-#endif
-
 #ifdef GPIO_AVAILABLE_PINS_STR
 // Parse comma-separated GPIO pins string into vector
 std::vector<int> parse_gpio_pins(const char* pins_str) {
@@ -220,6 +206,17 @@ std::map<int, int> pwm_channels; // pin -> ledc_channel
 int next_ledc_channel = 0;
 const int PWM_FREQUENCY = 5000; // 5kHz for LED dimming
 const int PWM_RESOLUTION = 8;   // 8-bit resolution
+
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+struct NightVisionState {
+  bool active = false;
+  int pin = -1;
+  unsigned long start_ms = 0;
+};
+
+NightVisionState nightVision;
+const unsigned long NIGHT_VISION_PULSE_MS = 200;
+#endif
 
 void configure_pwm_pin(int pin) {
   if (pwm_channels.find(pin) != pwm_channels.end()) {
@@ -273,6 +270,14 @@ void initialize_gpio() {
     digitalWrite(pin, state);
     log_i("Initialized GPIO %d to state %d", pin, state);
   }
+
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+  pinMode(NIGHT_VISION_GPIO_0, OUTPUT);
+  digitalWrite(NIGHT_VISION_GPIO_0, LOW);
+  pinMode(NIGHT_VISION_GPIO_1, OUTPUT);
+  digitalWrite(NIGHT_VISION_GPIO_1, LOW);
+  log_i("Initialized night vision GPIOs %d and %d to LOW", NIGHT_VISION_GPIO_0, NIGHT_VISION_GPIO_1);
+#endif
 }
 
 void handle_gpio() {
@@ -325,6 +330,38 @@ void handle_gpio() {
     log_i("Set GPIO %d to %s", pin, state > 0.5 ? "HIGH" : "LOW");
   }
   
+  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  web_server.send(200, "text/plain", "OK");
+}
+#endif
+
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+void handle_night_vision() {
+  log_v("handle_night_vision");
+
+  if (!web_server.hasArg("state")) {
+    web_server.send(400, "text/plain", "Missing 'state' parameter");
+    return;
+  }
+
+  int state = web_server.arg("state").toInt();
+  if (state != 0 && state != 1) {
+    web_server.send(400, "text/plain", "Invalid state. Must be 0 or 1");
+    return;
+  }
+
+  int pin = state == 0 ? NIGHT_VISION_GPIO_0 : NIGHT_VISION_GPIO_1;
+
+  if (nightVision.active && nightVision.pin != pin) {
+    digitalWrite(nightVision.pin, LOW);
+  }
+
+  nightVision.active = true;
+  nightVision.pin = pin;
+  nightVision.start_ms = millis();
+  digitalWrite(pin, HIGH);
+
+  log_i("Night vision state %d triggered on GPIO %d", state, pin);
   web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   web_server.send(200, "text/plain", "OK");
 }
@@ -557,14 +594,6 @@ void setup()
   digitalWrite(USER_LED_GPIO, !USER_LED_ON_LEVEL);
 #endif
 
-#ifdef FLASH_LED_GPIO
-  pinMode(FLASH_LED_GPIO, OUTPUT);
-  // Set resolution to 8 bits
-  analogWriteResolution(8);
-  // Turn flash led off
-  analogWrite(FLASH_LED_GPIO, 0);
-#endif
-
 #ifdef GPIO_AVAILABLE_PINS_STR
   initialize_gpio();
 #endif
@@ -656,13 +685,12 @@ void setup()
   web_server.on("/snapshot", HTTP_GET, handle_snapshot);
   // Camera stream
   web_server.on("/stream", HTTP_GET, handle_stream);
-#ifdef FLASH_LED_GPIO
-  // Flash led
-  web_server.on("/flash", HTTP_GET, handle_flash);
-#endif
 #ifdef GPIO_AVAILABLE_PINS_STR
   // GPIO control
   web_server.on("/gpio", HTTP_GET, handle_gpio);
+#endif
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+  web_server.on("/night_vision", HTTP_GET, handle_night_vision);
 #endif
   web_server.onNotFound([]()
                         { iotWebConf.handleNotFound(); });
@@ -671,6 +699,13 @@ void setup()
 void loop()
 {
   iotWebConf.doLoop();
+
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+  if (nightVision.active && millis() - nightVision.start_ms >= NIGHT_VISION_PULSE_MS) {
+    digitalWrite(nightVision.pin, LOW);
+    nightVision.active = false;
+  }
+#endif
 
   if (camera_server)
     camera_server->doLoop();

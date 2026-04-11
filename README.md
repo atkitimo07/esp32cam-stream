@@ -294,6 +294,37 @@ Examples:
 
 Available pins depend on the board configuration.
 
+### GET: /night_vision?state=<state>
+
+Calling this URL will trigger a night vision light pulse on one of two configurable GPIO pins.
+The state parameter accepts 0 or 1:
+- `state=0`: Pulses GPIO_0 for 200ms (e.g., IR filter off)
+- `state=1`: Pulses GPIO_1 for 200ms (e.g., IR filter on)
+
+Authentication is not required. The pulse is non-blocking and does not affect camera streaming.
+
+Example:
+- `http://esp32cam-rtsp.local/night_vision?state=0` (pulse first pin)
+- `http://esp32cam-rtsp.local/night_vision?state=1` (pulse second pin)
+
+Available only if `NIGHT_VISION_GPIO_0` and `NIGHT_VISION_GPIO_1` are defined in the board configuration.
+
+## Default WiFi Credentials
+
+You can set default WiFi credentials at compile time by defining these macros in the board JSON's `extra_flags`:
+
+```json
+"'-D DEFAULT_STA_SSID="Your-WiFi-SSID"'",
+"'-D DEFAULT_STA_PASSWORD="your-password"'",
+"'-D DEFAULT_STA_CONNECT_TIMEOUT=10000'"  // optional, in milliseconds
+```
+
+When default credentials are configured:
+- The device will attempt to connect to the specified WiFi network at startup
+- If the connection succeeds within the timeout, the device goes directly online
+- If the connection fails, it falls back to AP mode
+- If no default credentials are set, the device starts in AP mode as usual
+
 ## Issues / Nice to know
 
 - The red LED on the back of the device indicates the device is not connected.
