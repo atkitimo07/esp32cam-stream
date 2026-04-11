@@ -294,6 +294,27 @@ Examples:
 
 Available pins depend on the board configuration.
 
+### GET: /gpio/status
+
+Calling this URL returns the current state of all configured GPIO pins as JSON.
+
+Returns a JSON object with a `gpio_states` object containing pin numbers as keys and their current states (0.0-1.0) as values.
+
+Authentication is not required.
+
+Example response:
+```json
+{
+  "gpio_states": {
+    "12": 1.0,
+    "13": 0.5,
+    "14": 0.0
+  }
+}
+```
+
+Available only if `GPIO_AVAILABLE_PINS_STR` is defined in the board configuration.
+
 ### GET: /night_vision?state=<state>
 
 Calling this URL will trigger a night vision light pulse on one of two configurable GPIO pins.
@@ -306,6 +327,25 @@ Authentication is not required. The pulse is non-blocking and does not affect ca
 Example:
 - `http://esp32cam-rtsp.local/night_vision?state=0` (pulse first pin)
 - `http://esp32cam-rtsp.local/night_vision?state=1` (pulse second pin)
+
+Available only if `NIGHT_VISION_GPIO_0` and `NIGHT_VISION_GPIO_1` are defined in the board configuration.
+
+### GET: /night_vision/status
+
+Calling this URL returns the current state of the night vision bistable mechanism as JSON.
+
+Returns a JSON object with:
+- `state`: integer indicating the bistable state (0=off, 1=on)
+
+Authentication is not required.
+
+Example responses:
+```json
+{"state": 0}
+```
+```json
+{"state": 1}
+```
 
 Available only if `NIGHT_VISION_GPIO_0` and `NIGHT_VISION_GPIO_1` are defined in the board configuration.
 
