@@ -466,8 +466,57 @@ void update_camera_settings()
   camera->set_colorbar(camera, param_colorbar.value());
 }
 
+static bool has_default_wifi_credentials()
+{
+  return strlen(DEFAULT_STA_SSID) > 0 && strlen(DEFAULT_STA_PASSWORD) > 0;
+}
+
+static bool connect_default_wifi()
+{
+  if (!has_default_wifi_credentials())
+    return false;
+
+  log_i("Attempting to connect to default WiFi '%s'", DEFAULT_STA_SSID);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(DEFAULT_STA_SSID, DEFAULT_STA_PASSWORD);
+
+  auto start = millis();
+  while (millis() - start < DEFAULT_STA_CONNECT_TIMEOUT)
+  {
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      log_i("Connected to default WiFi, IP %s", WiFi.localIP().toString().c_str());
+      return true;
+    }
+    delay(200);
+  }
+
+  log_e("Default WiFi connection failed");
+  return false;
+}
+
+static void start_ap_fallback()
+{
+  log_i("Starting fallback AP mode");
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_AP);
+
+  const char *apPassword = WIFI_PASSWORD;
+  if (apPassword != nullptr && apPassword[0] != '\0')
+  {
+    WiFi.softAP(WIFI_SSID, apPassword);
+  }
+  else
+  {
+    WiFi.softAP(WIFI_SSID);
+  }
+}
+
 void start_rtsp_server()
 {
+  if (camera_server)
+    return;
+
   log_v("start_rtsp_server");
   camera_server = std::unique_ptr<rtsp_server>(new rtsp_server(cam, param_frame_duration.value(), RTSP_PORT));
   // Add RTSP service to mDNS
@@ -568,6 +617,15 @@ void setup()
 #ifdef USER_LED_GPIO
   iotWebConf.setStatusPin(USER_LED_GPIO, USER_LED_ON_LEVEL);
 #endif
+
+  bool default_wifi_connected = false;
+  if (has_default_wifi_credentials())
+  {
+    default_wifi_connected = connect_default_wifi();
+    if (!default_wifi_connected)
+      start_ap_fallback();
+  }
+
   iotWebConf.init();
 
   // Try to initialize 3 times
@@ -583,6 +641,11 @@ void setup()
     esp_camera_deinit();
     log_e("Failed to initialize camera. Error: 0x%0x. Frame size: %s, frame rate: %d ms, jpeg quality: %d", camera_init_result, param_frame_size.value(), param_frame_duration.value(), param_jpg_quality.value());
     delay(500);
+  }
+
+  if (default_wifi_connected && camera_init_result == ESP_OK)
+  {
+    start_rtsp_server();
   }
 
   // Set up required URL handlers on the web server
