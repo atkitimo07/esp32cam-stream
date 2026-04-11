@@ -34,7 +34,9 @@
       "'-D CAMERA_CONFIG_LEDC_CHANNEL=LEDC_CHANNEL_0'",
       "'-D CAMERA_CONFIG_FB_COUNT=2'",
       "'-D CAMERA_CONFIG_FB_LOCATION=CAMERA_FB_IN_PSRAM'",
-      "'-D SCCB_I2C_PORT=I2C_NUM_0'"
+      "'-D SCCB_I2C_PORT=I2C_NUM_0'",
+      "'-D GPIO_AVAILABLE_PINS_STR=\"1,2,3\"'",
+      "'-D GPIO_INITIAL_STATES_STR=\"0,0,0\"'"
     ],
     "f_cpu": "240000000L",
     "f_flash": "80000000L",
