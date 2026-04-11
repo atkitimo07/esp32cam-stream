@@ -5,6 +5,19 @@
 
 #define WIFI_SSID "ESP32CAM-RTSP"
 #define WIFI_PASSWORD nullptr
+
+#ifndef DEFAULT_STA_SSID
+#define DEFAULT_STA_SSID ""
+#endif
+
+#ifndef DEFAULT_STA_PASSWORD
+#define DEFAULT_STA_PASSWORD ""
+#endif
+
+#ifndef DEFAULT_STA_CONNECT_TIMEOUT
+#define DEFAULT_STA_CONNECT_TIMEOUT 10000
+#endif
+
 #define CONFIG_VERSION "1.6"
 
 #define OTA_PASSWORD "ESP32CAM-RTSP"
