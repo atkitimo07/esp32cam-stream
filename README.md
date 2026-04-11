@@ -278,6 +278,22 @@ Calling this URL will start the form for configuring the device in the browser. 
 Calling this URL will return a JPEG snapshot of the camera in the browser.
 This request can also be used (for example using cURL) to save the snapshot to a file.
 
+### GET: /gpio?pin=<pin>&state=<state>
+
+Calling this URL will set the GPIO pin to the specified state. The state parameter accepts values from 0.0 to 1.0:
+- 0.0: Digital LOW
+- 1.0: Digital HIGH  
+- 0.0-1.0: PWM duty cycle (8-bit resolution, 5kHz frequency)
+
+The pin must be in the list of available GPIO pins configured for the board. Authentication is not required.
+
+Examples:
+- `http://esp32cam-rtsp.local/gpio?pin=12&state=1` (digital HIGH)
+- `http://esp32cam-rtsp.local/gpio?pin=12&state=0.5` (50% PWM duty cycle)
+- `http://esp32cam-rtsp.local/gpio?pin=12&state=0` (digital LOW)
+
+Available pins depend on the board configuration.
+
 ## Issues / Nice to know
 
 - The red LED on the back of the device indicates the device is not connected.
