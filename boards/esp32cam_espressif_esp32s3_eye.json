@@ -36,7 +36,9 @@
       "'-D CAMERA_CONFIG_FB_LOCATION=CAMERA_FB_IN_PSRAM'",
       "'-D SCCB_I2C_PORT=I2C_NUM_0'",
       "'-D GPIO_AVAILABLE_PINS_STR=\"1,2,3\"'",
-      "'-D GPIO_INITIAL_STATES_STR=\"0,0,0\"'"
+      "'-D GPIO_INITIAL_STATES_STR=\"0,0,0\"'",
+      "'-D NIGHT_VISION_GPIO_0=1'",
+      "'-D NIGHT_VISION_GPIO_1=2'"
     ],
     "f_cpu": "240000000L",
     "f_flash": "80000000L",
