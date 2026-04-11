@@ -203,6 +203,7 @@ std::vector<int> gpio_initial_states;
 
 // PWM configuration
 std::map<int, int> pwm_channels; // pin -> ledc_channel
+std::map<int, float> gpio_states; // pin -> current state (0.0-1.0)
 int next_ledc_channel = 0;
 const int PWM_FREQUENCY = 5000; // 5kHz for LED dimming
 const int PWM_RESOLUTION = 8;   // 8-bit resolution
@@ -212,6 +213,7 @@ struct NightVisionState {
   bool active = false;
   int pin = -1;
   unsigned long start_ms = 0;
+  int state = 0;  // Bistable state: 0=off, 1=on
 };
 
 NightVisionState nightVision;
@@ -268,6 +270,7 @@ void initialize_gpio() {
     int state = gpio_initial_states[i];
     pinMode(pin, OUTPUT);
     digitalWrite(pin, state);
+    gpio_states[pin] = state; // Track initial state
     log_i("Initialized GPIO %d to state %d", pin, state);
   }
 
@@ -330,6 +333,9 @@ void handle_gpio() {
     log_i("Set GPIO %d to %s", pin, state > 0.5 ? "HIGH" : "LOW");
   }
   
+  // Update tracked state
+  gpio_states[pin] = state;
+  
   web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   web_server.send(200, "text/plain", "OK");
 }
@@ -356,6 +362,7 @@ void handle_night_vision() {
     digitalWrite(nightVision.pin, LOW);
   }
 
+  nightVision.state = state;  // Update bistable state
   nightVision.active = true;
   nightVision.pin = pin;
   nightVision.start_ms = millis();
@@ -425,6 +432,40 @@ void handle_stream()
   client.stop();
   log_v("stopped streaming");
 }
+
+#if defined(GPIO_AVAILABLE_PINS_STR)
+void handle_gpio_status() {
+  log_v("handle_gpio_status");
+  
+  String json = "{";
+  json += "\"gpio_states\":{";
+  
+  bool first = true;
+  for (int pin : available_gpio_pins) {
+    if (!first) json += ",";
+    json += "\"" + String(pin) + "\":" + String(gpio_states[pin], 2);
+    first = false;
+  }
+  
+  json += "}}";
+  
+  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  web_server.send(200, "application/json", json);
+}
+#endif
+
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+void handle_night_vision_status() {
+  log_v("handle_night_vision_status");
+  
+  String json = "{";
+  json += "\"state\":" + String(nightVision.state);
+  json += "}";
+  
+  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  web_server.send(200, "application/json", json);
+}
+#endif
 
 esp_err_t initialize_camera()
 {
@@ -688,9 +729,13 @@ void setup()
 #ifdef GPIO_AVAILABLE_PINS_STR
   // GPIO control
   web_server.on("/gpio", HTTP_GET, handle_gpio);
+  // GPIO status
+  web_server.on("/gpio/status", HTTP_GET, handle_gpio_status);
 #endif
 #if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
   web_server.on("/night_vision", HTTP_GET, handle_night_vision);
+  // Night vision status
+  web_server.on("/night_vision/status", HTTP_GET, handle_night_vision_status);
 #endif
   web_server.onNotFound([]()
                         { iotWebConf.handleNotFound(); });
