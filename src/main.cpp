@@ -2,6 +2,7 @@
 #include <esp_wifi.h>
 #include <soc/rtc_cntl_reg.h>
 #include <driver/i2c.h>
+#include <driver/ledc.h>
 #include <IotWebConf.h>
 #include <IotWebConfTParameter.h>
 #include <OV2640.h>
@@ -13,6 +14,10 @@
 #include <lookup_camera_wb_mode.h>
 #include <format_duration.h>
 #include <format_number.h>
+#include <vector>
+#include <string>
+#include <map>
+
 #include <moustache.h>
 #include <settings.h>
 
@@ -161,6 +166,167 @@ void handle_flash()
 
   web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   web_server.send(200);
+}
+#endif
+
+#ifdef GPIO_AVAILABLE_PINS_STR
+// Parse comma-separated GPIO pins string into vector
+std::vector<int> parse_gpio_pins(const char* pins_str) {
+  std::vector<int> pins;
+  if (!pins_str) return pins;
+  
+  String str = String(pins_str);
+  int start = 0;
+  int comma = str.indexOf(',');
+  while (comma != -1 || start < str.length()) {
+    String pin_str = (comma == -1) ? str.substring(start) : str.substring(start, comma);
+    pin_str.trim();
+    if (pin_str.length() > 0) {
+      pins.push_back(pin_str.toInt());
+    }
+    if (comma == -1) break;
+    start = comma + 1;
+    comma = str.indexOf(',', start);
+  }
+  return pins;
+}
+
+// Parse comma-separated initial states string into vector
+std::vector<int> parse_gpio_states(const char* states_str) {
+  std::vector<int> states;
+  if (!states_str) return states;
+  
+  String str = String(states_str);
+  int start = 0;
+  int comma = str.indexOf(',');
+  while (comma != -1 || start < str.length()) {
+    String state_str = (comma == -1) ? str.substring(start) : str.substring(start, comma);
+    state_str.trim();
+    if (state_str.length() > 0) {
+      states.push_back(state_str.toInt());
+    }
+    if (comma == -1) break;
+    start = comma + 1;
+    comma = str.indexOf(',', start);
+  }
+  return states;
+}
+
+std::vector<int> available_gpio_pins;
+std::vector<int> gpio_initial_states;
+
+// PWM configuration
+std::map<int, int> pwm_channels; // pin -> ledc_channel
+int next_ledc_channel = 0;
+const int PWM_FREQUENCY = 5000; // 5kHz for LED dimming
+const int PWM_RESOLUTION = 8;   // 8-bit resolution
+
+void configure_pwm_pin(int pin) {
+  if (pwm_channels.find(pin) != pwm_channels.end()) {
+    return; // Already configured
+  }
+  
+  int channel = next_ledc_channel++;
+  pwm_channels[pin] = channel;
+  
+  // Ensure pin is configured as output
+  pinMode(pin, OUTPUT);
+  
+  // Configure LEDC timer
+  ledc_timer_config_t ledc_timer = {
+    .speed_mode = LEDC_LOW_SPEED_MODE,
+    .duty_resolution = (ledc_timer_bit_t)PWM_RESOLUTION,
+    .timer_num = LEDC_TIMER_1,
+    .freq_hz = PWM_FREQUENCY,
+    .clk_cfg = LEDC_AUTO_CLK
+  };
+  ledc_timer_config(&ledc_timer);
+  
+  // Configure LEDC channel
+  ledc_channel_config_t ledc_channel = {
+    .gpio_num = pin,
+    .speed_mode = LEDC_LOW_SPEED_MODE,
+    .channel = (ledc_channel_t)channel,
+    .timer_sel = LEDC_TIMER_1,
+    .duty = 0,
+    .hpoint = 0
+  };
+  ledc_channel_config(&ledc_channel);
+  
+  log_i("Configured PWM on GPIO %d with channel %d", pin, channel);
+}
+
+void initialize_gpio() {
+  log_v("initialize_gpio");
+  available_gpio_pins = parse_gpio_pins(GPIO_AVAILABLE_PINS_STR);
+  gpio_initial_states = parse_gpio_states(GPIO_INITIAL_STATES_STR);
+  
+  if (available_gpio_pins.size() != gpio_initial_states.size()) {
+    log_e("GPIO configuration error: pins and states count mismatch");
+    return;
+  }
+  
+  for (size_t i = 0; i < available_gpio_pins.size(); i++) {
+    int pin = available_gpio_pins[i];
+    int state = gpio_initial_states[i];
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, state);
+    log_i("Initialized GPIO %d to state %d", pin, state);
+  }
+}
+
+void handle_gpio() {
+  log_v("handle_gpio");
+  
+  if (!web_server.hasArg("pin")) {
+    web_server.send(400, "text/plain", "Missing 'pin' parameter");
+    return;
+  }
+  
+  if (!web_server.hasArg("state")) {
+    web_server.send(400, "text/plain", "Missing 'state' parameter");
+    return;
+  }
+  
+  int pin = web_server.arg("pin").toInt();
+  float state = web_server.arg("state").toFloat();
+  
+  // Check if pin is in available pins list
+  bool pin_available = false;
+  for (int available_pin : available_gpio_pins) {
+    if (available_pin == pin) {
+      pin_available = true;
+      break;
+    }
+  }
+  
+  if (!pin_available) {
+    web_server.send(400, "text/plain", "Pin not available for GPIO control");
+    return;
+  }
+  
+  // Validate state (0.0 to 1.0)
+  if (state < 0.0 || state > 1.0) {
+    web_server.send(400, "text/plain", "Invalid state. Must be between 0.0 and 1.0");
+    return;
+  }
+  
+  // Handle PWM for values between 0.0 and 1.0 (not exactly 0.0 or 1.0)
+  if (state > 0.0 && state < 1.0) {
+    configure_pwm_pin(pin);
+    int channel = pwm_channels[pin];
+    int duty = (int)(state * ((1 << PWM_RESOLUTION) - 1));
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)channel, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)channel);
+    log_i("Set PWM on GPIO %d to %.2f (duty: %d)", pin, state, duty/((float)((1 << PWM_RESOLUTION) - 1)));
+  } else {
+    // Digital write for exact 0.0 or 1.0
+    digitalWrite(pin, state > 0.5 ? HIGH : LOW);
+    log_i("Set GPIO %d to %s", pin, state > 0.5 ? "HIGH" : "LOW");
+  }
+  
+  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  web_server.send(200, "text/plain", "OK");
 }
 #endif
 
@@ -350,6 +516,10 @@ void setup()
   analogWrite(FLASH_LED_GPIO, 0);
 #endif
 
+#ifdef GPIO_AVAILABLE_PINS_STR
+  initialize_gpio();
+#endif
+
 #ifdef ARDUINO_USB_CDC_ON_BOOT
   // Delay for USB to connect/settle
   delay(5000);
@@ -426,6 +596,10 @@ void setup()
 #ifdef FLASH_LED_GPIO
   // Flash led
   web_server.on("/flash", HTTP_GET, handle_flash);
+#endif
+#ifdef GPIO_AVAILABLE_PINS_STR
+  // GPIO control
+  web_server.on("/gpio", HTTP_GET, handle_gpio);
 #endif
   web_server.onNotFound([]()
                         { iotWebConf.handleNotFound(); });
