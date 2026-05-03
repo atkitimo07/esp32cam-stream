@@ -4,6 +4,7 @@
 #include "lookup_camera_frame_size.h"
 #include "settings.h"
 #include <vector>
+#include <memory>
 
 // ======== USER CONFIG ========
 const char* ssid     = DEFAULT_STA_SSID;
@@ -15,8 +16,13 @@ const char* ap_pass = WIFI_PASSWORD;
 std::vector<int> gpioPins;
 std::vector<float> gpioStates;
 
+// ======== SERVER SETUP ========
 
 AsyncWebServer server(80);
+
+static volatile uint32_t capture_frames = 0;
+static volatile uint32_t stream_frames = 0;
+static uint32_t fps_last_ms = 0;
 
 // ======== WIFI SETUP ========
 void setupWiFi()
@@ -140,55 +146,66 @@ void initCamera()
 }
 
 // ======== MJPEG STREAM HANDLER ========
+void captureFrame()
+{
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) return;
+    esp_camera_fb_return(fb);
+    capture_frames++;
+}
+
 void setupStream()
 {
-    server.on("/stream", HTTP_GET, [](AsyncWebServerRequest *request) {
+    server.on("/stream", HTTP_GET, [=](AsyncWebServerRequest *request) {
+        struct StreamState {
+            camera_fb_t *fb = nullptr;
+            size_t offset = 0;
+        };
+
+        auto state = std::make_shared<StreamState>();
 
         AsyncWebServerResponse *response = request->beginChunkedResponse(
             "multipart/x-mixed-replace; boundary=frame",
-            [](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+            [state](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
 
-                static camera_fb_t *fb = nullptr;
-                static size_t fb_index = 0;
-                static String header;
-
-                // Start of new frame
-                if (fb == nullptr) {
-                    fb = esp_camera_fb_get();
-                    if (!fb) return 0;
-
-                    fb_index = 0;
-                    header = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + String(fb->len) + "\r\n\r\n";
+                // Start of new frame - grab latest
+                if (state->offset == 0) {
+                    if (state->fb) {
+                        esp_camera_fb_return(state->fb);
+                    }
+                    state->fb = esp_camera_fb_get();
+                    if (!state->fb) {
+                        return RESPONSE_TRY_AGAIN;
+                    }
                 }
 
-                size_t bytes_written = 0;
-
-                // Send header first
-                if (fb_index < header.length()) {
-                    size_t to_copy = min(maxLen, header.length() - fb_index);
-                    memcpy(buffer, header.c_str() + fb_index, to_copy);
-                    fb_index += to_copy;
-                    return to_copy;
+                if (!state->fb) {
+                    return RESPONSE_TRY_AGAIN;
                 }
 
-                // Send image data
-                size_t img_index = fb_index - header.length();
-                size_t remaining = fb->len - img_index;
+                String header = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
+                                String(state->fb->len) + "\r\n\r\n";
 
-                size_t to_copy = min(maxLen, remaining);
-                memcpy(buffer, fb->buf + img_index, to_copy);
-
-                fb_index += to_copy;
-                bytes_written = to_copy;
-
-                // If frame complete, add newline and release
-                if (fb_index >= header.length() + fb->len) {
-                    esp_camera_fb_return(fb);
-                    fb = nullptr;
-                    fb_index = 0;
+                if (state->offset < header.length()) {
+                    size_t n = min(maxLen, header.length() - state->offset);
+                    memcpy(buffer, header.c_str() + state->offset, n);
+                    state->offset += n;
+                    return n;
                 }
 
-                return bytes_written;
+                size_t img_offset = state->offset - header.length();
+                size_t remaining = state->fb->len - img_offset;
+                size_t n = min(maxLen, remaining);
+                memcpy(buffer, state->fb->buf + img_offset, n);
+
+                state->offset += n;
+
+                if (state->offset >= header.length() + state->fb->len) {
+                    state->offset = 0;
+                    stream_frames++;
+                }
+
+                return n;
             }
         );
 
@@ -266,6 +283,24 @@ void setupControl()
     });
 }
 
+// ======== FPS COUNTER (DEBUG) ========
+void printFPS()
+{
+    if (millis() - fps_last_ms < 1000) return;
+
+    fps_last_ms = millis();
+
+    uint32_t cap = capture_frames;
+    uint32_t str = stream_frames;
+
+    capture_frames = 0;
+    stream_frames = 0;
+
+    Serial.printf("[FPS] capture: %lu | stream: %lu\n",
+                  (unsigned long)cap,
+                  (unsigned long)str);
+}
+
 // ======== SETUP ========
 void setup()
 {
@@ -284,5 +319,6 @@ void setup()
 // ======== LOOP ========
 void loop()
 {
-    // Nothing needed — async handles everything
+    captureFrame();
+    printFPS();
 }
