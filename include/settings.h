@@ -1,10 +1,10 @@
 #pragma once
 
-#define APP_TITLE "ESP32CAM-RTSP"
+#define APP_TITLE "ESP32CAM-STREAM"
 #define APP_VERSION "1.0"
 
-#define WIFI_SSID "ESP32CAM-RTSP"
-#define WIFI_PASSWORD nullptr
+#define WIFI_SSID "ESP32CAM-STREAM"
+#define WIFI_PASSWORD "password"
 
 #ifndef DEFAULT_STA_SSID
 #define DEFAULT_STA_SSID "IoT Infusion Hub"
@@ -15,12 +15,12 @@
 #endif
 
 #ifndef DEFAULT_STA_CONNECT_TIMEOUT
-#define DEFAULT_STA_CONNECT_TIMEOUT 10000
+#define DEFAULT_STA_CONNECT_TIMEOUT 15000
 #endif
 
 #define CONFIG_VERSION "1.6"
 
-#define OTA_PASSWORD "ESP32CAM-RTSP"
+#define OTA_PASSWORD "ESP32CAM-STREAM"
 
 #define RTSP_PORT 554
 
