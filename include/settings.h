@@ -7,11 +7,11 @@
 #define WIFI_PASSWORD nullptr
 
 #ifndef DEFAULT_STA_SSID
-#define DEFAULT_STA_SSID ""
+#define DEFAULT_STA_SSID "IoT Infusion Hub"
 #endif
 
 #ifndef DEFAULT_STA_PASSWORD
-#define DEFAULT_STA_PASSWORD ""
+#define DEFAULT_STA_PASSWORD "~mix it shake it send it~"
 #endif
 
 #ifndef DEFAULT_STA_CONNECT_TIMEOUT
