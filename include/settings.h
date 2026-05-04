@@ -4,15 +4,6 @@
 #define APP_VERSION "1.0"
 
 #define WIFI_SSID "ESP32CAM-STREAM"
-#define WIFI_PASSWORD "password"
-
-#ifndef DEFAULT_STA_SSID
-#define DEFAULT_STA_SSID "IoT Infusion Hub"
-#endif
-
-#ifndef DEFAULT_STA_PASSWORD
-#define DEFAULT_STA_PASSWORD "~mix it shake it send it~"
-#endif
 
 #ifndef DEFAULT_STA_CONNECT_TIMEOUT
 #define DEFAULT_STA_CONNECT_TIMEOUT 15000
