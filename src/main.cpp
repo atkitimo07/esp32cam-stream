@@ -4,7 +4,6 @@
 #include "lookup_camera_frame_size.h"
 #include "settings.h"
 #include "secrets.h"
-#include <vector>
 #include <ArduinoOTA.h>
 
 // ======== USER CONFIG ========
@@ -14,19 +13,32 @@ const char* password = DEFAULT_STA_PASSWORD;
 const char* ap_ssid = WIFI_SSID;
 const char* ap_pass = WIFI_PASSWORD;
 
-std::vector<int> gpioPins;
-std::vector<float> gpioStates;
+
 
 uint32_t last_ota_time = 0;
 
-
 WebServer server(80);
 
-static volatile uint32_t capture_frames = 0;
 static volatile uint32_t stream_frames = 0;
 static uint32_t fps_last_ms = 0;
 
+float ledState = 0.0f;  // Current LED state (0.0-1.0)
+
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+struct NightVisionState {
+  bool active = false;
+  int pin = -1;
+  unsigned long start_ms = 0;
+  int state = 0;  // Bistable state: 0=off, 1=on
+};
+
+NightVisionState nightVision;
+const unsigned long NIGHT_VISION_PULSE_MS = 200;
+#endif
+
 #define STREAM_CONTENT_BOUNDARY "frame"
+
+void handleLoop();
 
 // ======== FPS COUNTER (DEBUG) ========
 void printFPS()
@@ -104,64 +116,6 @@ void setupOTA()
     ArduinoOTA.begin();
 }
 
-// ======== GPIO SETUP ========
-std::vector<float> parseCSV(const char* str)
-{
-    std::vector<float> result;
-    String s = String(str);
-
-    int start = 0;
-    while (true) {
-        int comma = s.indexOf(',', start);
-        if (comma == -1) {
-            result.push_back(s.substring(start).toFloat());
-            break;
-        }
-        result.push_back(s.substring(start, comma).toFloat());
-        start = comma + 1;
-    }
-    return result;
-}
-
-void setupGPIOs()
-{
-#ifdef GPIO_AVAILABLE_PINS_STR
-#ifdef GPIO_INITIAL_STATES_STR
-
-    auto pins = parseCSV(GPIO_AVAILABLE_PINS_STR);
-    auto states = parseCSV(GPIO_INITIAL_STATES_STR);
-
-    if (pins.size() != states.size()) {
-        Serial.println("GPIO config mismatch, must be same length!");
-        return;
-    }
-
-    for (size_t i = 0; i < pins.size(); i++) {
-        int pin = (int)pins[i];
-        float state = states[i];
-
-        pinMode(pin, OUTPUT);
-
-        if (state == 0.0f || state == 1.0f) {
-            digitalWrite(pin, (int)state);
-        } else {
-            // initialise PWM
-            int channel = i; // simple mapping
-            ledcSetup(channel, 5000, 8);
-            ledcAttachPin(pin, channel);
-            ledcWrite(channel, (int)(state * 255));
-        }
-
-        gpioPins.push_back(pin);
-        gpioStates.push_back(state);
-
-        Serial.printf("GPIO %d init -> %.2f\n", pin, state);
-    }
-
-#endif
-#endif
-}
-
 // ======== CAMERA INIT ========
 void initCamera()
 {
@@ -213,6 +167,10 @@ void handleStream()
         // Yield to allow WebServer to handle other requests
         server.handleClient();
 
+        // Handle other tasks like night vision timing
+        handleLoop();
+        printFPS();
+
         // Boundary and content-type header
         client.write("\r\n--" STREAM_CONTENT_BOUNDARY "\r\nContent-Type: image/jpeg\r\nContent-Length: ");
 
@@ -232,7 +190,6 @@ void handleStream()
 
         esp_camera_fb_return(fb);
         stream_frames++;
-        printFPS();
     }
 
     Serial.println("Stream client disconnected");
@@ -244,73 +201,106 @@ void setupStream()
     server.on("/stream", handleStream);
 }
 
-// ======== SIMPLE CONTROL ENDPOINT ========
-#define LED_PIN 4
+// ======== NIGHT VISION HANDLERS ========
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+void handle_night_vision() {
+  if (!server.hasArg("state")) {
+    server.send(400, "text/plain", "Missing 'state' parameter");
+    return;
+  }
 
+  int state = server.arg("state").toInt();
+  if (state != 0 && state != 1) {
+    server.send(400, "text/plain", "Invalid state. Must be 0 or 1");
+    return;
+  }
+
+  int pin = state == 0 ? NIGHT_VISION_GPIO_0 : NIGHT_VISION_GPIO_1;
+
+  if (nightVision.active && nightVision.pin != pin) {
+    digitalWrite(nightVision.pin, LOW);
+  }
+
+  nightVision.state = state;  // Update bistable state
+  nightVision.active = true;
+  nightVision.pin = pin;
+  nightVision.start_ms = millis();
+  digitalWrite(pin, HIGH);
+
+  Serial.printf("Night vision state %d triggered on GPIO %d\n", state, pin);
+  String resp = "OK state=" + String(state);
+  server.send(200, "text/plain", resp);
+}
+
+void handle_night_vision_state() {
+  String resp = String("{\"state\":") + String(nightVision.state) + "}";
+  server.send(200, "application/json", resp);
+}
+#endif
+
+#if defined(IR_LED_PIN)
+void handleIRLED()
+{
+    if (!server.hasArg("state")) {
+        server.send(400, "text/plain", "Missing state parameter");
+        return;
+    }
+
+    float state = server.arg("state").toFloat();
+
+    // constrain to 0.0-1.0
+    state = constrain(state, 0.0f, 1.0f);
+
+    ledState = state;
+
+    if (state == 0.0f || state == 1.0f) {
+        // DIGITAL MODE
+        ledcDetachPin(IR_LED_PIN);  // safe even if not attached
+        pinMode(IR_LED_PIN, OUTPUT);
+        digitalWrite(IR_LED_PIN, (int)state);
+    } else {
+        // PWM MODE
+        ledcSetup(0, 5000, 8);  // channel 0 for LED
+        ledcAttachPin(IR_LED_PIN, 0);
+        int duty = (int)(state * 255);
+        ledcWrite(0, duty);
+    }
+
+    String resp = "OK state=" + String(state);
+    server.send(200, "text/plain", resp);
+}
+
+void handleIRLEDState()
+{
+    String resp = "{\"state\":" + String(ledState) + "}";
+    server.send(200, "application/json", resp);
+}
+#endif
+
+// ======== CONTROL ENDPOINTS ========
 void setupControl()
 {
-    server.on("/gpio", [](void) {
-        if (!server.hasArg("pin") || !server.hasArg("state")) {
-            server.send(400, "text/plain", "Missing pin/state");
-            return;
-        }
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+    server.on("/nightvision", handle_night_vision);
+    server.on("/nightvision/state", handle_night_vision_state);
+#endif
 
-        int pin = server.arg("pin").toInt();
-        float state = server.arg("state").toFloat();
+#if defined(IR_LED_PIN)
+    server.on("/irled", handleIRLED);
+    server.on("/irled/state", handleIRLEDState);
+#endif
+}
 
-        // validate pin is allowed
-        bool valid = false;
-        for (int p : gpioPins) {
-            if (p == pin) {
-                valid = true;
-                break;
-            }
-        }
-
-        if (!valid) {
-            server.send(403, "text/plain", "Pin not allowed");
-            return;
-        }
-
-        // find index
-        int idx = -1;
-        for (size_t i = 0; i < gpioPins.size(); i++) {
-            if (gpioPins[i] == pin) {
-                idx = i;
-                break;
-            }
-        }
-
-        if (idx == -1) {
-            server.send(500, "text/plain", "Internal error");
-            return;
-        }
-
-        // ===== MODE SWITCHING =====
-
-        if (state == 0.0f || state == 1.0f) {
-            // DIGITAL MODE
-
-            ledcDetachPin(pin);  // safe even if not attached
-            pinMode(pin, OUTPUT);
-            digitalWrite(pin, (int)state);
-
-        } else {
-            // PWM MODE
-
-            int channel = idx; // stable mapping
-            ledcSetup(channel, 5000, 8);
-            ledcAttachPin(pin, channel);
-
-            int duty = constrain((int)(state * 255), 0, 255);
-            ledcWrite(channel, duty);
-        }
-
-        gpioStates[idx] = state;
-
-        String resp = "OK pin=" + String(pin) + " state=" + String(state);
-        server.send(200, "text/plain", resp);
-    });
+// ======== LOOP HANDLER ========
+void handleLoop()
+{
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+    if (nightVision.active && millis() - nightVision.start_ms >= NIGHT_VISION_PULSE_MS) {
+        digitalWrite(nightVision.pin, LOW);
+        nightVision.active = false;
+        Serial.printf("Night vision state %d on GPIO %d deactivated after pulse\n", nightVision.state, nightVision.pin);
+    }
+#endif
 }
 
 // ======== SETUP ========
@@ -333,4 +323,5 @@ void loop()
 {
     ArduinoOTA.handle();
     server.handleClient();
+    handleLoop();
 }
