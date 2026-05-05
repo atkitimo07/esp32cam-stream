@@ -1,5 +1,5 @@
 #include <WiFi.h>
-#include <ESPAsyncWebServer.h>
+#include <WebServer.h>
 #include "esp_camera.h"
 #include "lookup_camera_frame_size.h"
 #include "settings.h"
@@ -20,11 +20,22 @@ std::vector<float> gpioStates;
 uint32_t last_ota_time = 0;
 
 
-AsyncWebServer server(80);
+WebServer server(80);
 
 static volatile uint32_t capture_frames = 0;
 static volatile uint32_t stream_frames = 0;
 static uint32_t fps_last_ms = 0;
+
+#define STREAM_CONTENT_BOUNDARY "frame"
+
+// ======== FPS COUNTER (DEBUG) ========
+void printFPS()
+{
+    if (millis() - fps_last_ms < 1000) return;
+    fps_last_ms = millis();
+    Serial.printf("[FPS] stream: %lu\n", (unsigned long)stream_frames);
+    stream_frames = 0;
+}
 
 // ======== WIFI SETUP ========
 void setupWiFi()
@@ -190,72 +201,47 @@ void initCamera()
 }
 
 // ======== MJPEG STREAM HANDLER ========
-void captureFrame()
+void handleStream()
 {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) return;
-    esp_camera_fb_return(fb);
-    capture_frames++;
+    WiFiClient client = server.client();
+    char size_buf[16];
+
+    // Send HTTP headers
+    client.write("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: multipart/x-mixed-replace; boundary=" STREAM_CONTENT_BOUNDARY "\r\n\r\n");
+
+    while (client.connected()) {
+        // Yield to allow WebServer to handle other requests
+        server.handleClient();
+
+        // Boundary and content-type header
+        client.write("\r\n--" STREAM_CONTENT_BOUNDARY "\r\nContent-Type: image/jpeg\r\nContent-Length: ");
+
+        // Capture frame
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            delay(10);
+            continue;
+        }
+
+        // Send size
+        snprintf(size_buf, sizeof(size_buf), "%zu\r\n\r\n", fb->len);
+        client.write(size_buf);
+
+        // Send JPEG data
+        client.write(fb->buf, fb->len);
+
+        esp_camera_fb_return(fb);
+        stream_frames++;
+        printFPS();
+    }
+
+    Serial.println("Stream client disconnected");
+    client.stop();
 }
 
 void setupStream()
 {
-    server.on("/stream", HTTP_GET, [=](AsyncWebServerRequest *request) {
-        struct StreamState {
-            camera_fb_t *fb = nullptr;
-            size_t offset = 0;
-        };
-
-        auto state = std::make_shared<StreamState>();
-
-        AsyncWebServerResponse *response = request->beginChunkedResponse(
-            "multipart/x-mixed-replace; boundary=frame",
-            [state](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-
-                // Start of new frame - grab latest
-                if (state->offset == 0) {
-                    if (state->fb) {
-                        esp_camera_fb_return(state->fb);
-                    }
-                    state->fb = esp_camera_fb_get();
-                    if (!state->fb) {
-                        return RESPONSE_TRY_AGAIN;
-                    }
-                }
-
-                if (!state->fb) {
-                    return RESPONSE_TRY_AGAIN;
-                }
-
-                String header = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
-                                String(state->fb->len) + "\r\n\r\n";
-
-                if (state->offset < header.length()) {
-                    size_t n = min(maxLen, header.length() - state->offset);
-                    memcpy(buffer, header.c_str() + state->offset, n);
-                    state->offset += n;
-                    return n;
-                }
-
-                size_t img_offset = state->offset - header.length();
-                size_t remaining = state->fb->len - img_offset;
-                size_t n = min(maxLen, remaining);
-                memcpy(buffer, state->fb->buf + img_offset, n);
-
-                state->offset += n;
-
-                if (state->offset >= header.length() + state->fb->len) {
-                    state->offset = 0;
-                    stream_frames++;
-                }
-
-                return n;
-            }
-        );
-
-        response->addHeader("Cache-Control", "no-cache");
-        request->send(response);
-    });
+    server.on("/stream", handleStream);
 }
 
 // ======== SIMPLE CONTROL ENDPOINT ========
@@ -263,14 +249,14 @@ void setupStream()
 
 void setupControl()
 {
-    server.on("/gpio", HTTP_GET, [](AsyncWebServerRequest *request) {
-        if (!request->hasParam("pin") || !request->hasParam("state")) {
-            request->send(400, "text/plain", "Missing pin/state");
+    server.on("/gpio", [](void) {
+        if (!server.hasArg("pin") || !server.hasArg("state")) {
+            server.send(400, "text/plain", "Missing pin/state");
             return;
         }
 
-        int pin = request->getParam("pin")->value().toInt();
-        float state = request->getParam("state")->value().toFloat();
+        int pin = server.arg("pin").toInt();
+        float state = server.arg("state").toFloat();
 
         // validate pin is allowed
         bool valid = false;
@@ -282,7 +268,7 @@ void setupControl()
         }
 
         if (!valid) {
-            request->send(403, "text/plain", "Pin not allowed");
+            server.send(403, "text/plain", "Pin not allowed");
             return;
         }
 
@@ -296,7 +282,7 @@ void setupControl()
         }
 
         if (idx == -1) {
-            request->send(500, "text/plain", "Internal error");
+            server.send(500, "text/plain", "Internal error");
             return;
         }
 
@@ -323,26 +309,8 @@ void setupControl()
         gpioStates[idx] = state;
 
         String resp = "OK pin=" + String(pin) + " state=" + String(state);
-        request->send(200, "text/plain", resp);
+        server.send(200, "text/plain", resp);
     });
-}
-
-// ======== FPS COUNTER (DEBUG) ========
-void printFPS()
-{
-    if (millis() - fps_last_ms < 1000) return;
-
-    fps_last_ms = millis();
-
-    uint32_t cap = capture_frames;
-    uint32_t str = stream_frames;
-
-    capture_frames = 0;
-    stream_frames = 0;
-
-    Serial.printf("[FPS] capture: %lu | stream: %lu\n",
-                  (unsigned long)cap,
-                  (unsigned long)str);
 }
 
 // ======== SETUP ========
@@ -364,5 +332,5 @@ void setup()
 void loop()
 {
     ArduinoOTA.handle();
-    // Nothing needed — async handles everything
+    server.handleClient();
 }
