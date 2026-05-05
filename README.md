@@ -202,7 +202,7 @@ Example response:
 {"state": 0}
 ```
 
-### GET: /irled?state=<state> (AI-Thinker board only)
+### GET: /irled?state=<state>
 
 Controls the IR LED. The state parameter accepts 0.0 to 1.0:
 - 0.0: IR LED off
@@ -212,7 +212,7 @@ Controls the IR LED. The state parameter accepts 0.0 to 1.0:
 Example:
 - `http://esp32cam-stream.local/irled?state=1` (IR LED on)
 
-### GET: /irled/state (AI-Thinker board only)
+### GET: /irled/state
 
 Returns the current IR LED state as JSON.
 
@@ -223,12 +223,11 @@ Example response:
 
 ## Default WiFi Credentials
 
-You can set default WiFi credentials at compile time by defining these macros in the board JSON's `extra_flags`:
+You can set default WiFi credentials at compile time by defining these macros in the project. Easiest is to create a secrets.h file using the example:
 
 ```json
-"'-D DEFAULT_STA_SSID="Your-WiFi-SSID"'",
-"'-D DEFAULT_STA_PASSWORD="your-password"'",
-"'-D DEFAULT_STA_CONNECT_TIMEOUT=10000'"  // optional, in milliseconds
+#define DEFAULT_STA_SSID "Your-WiFi-SSID"
+#define DEFAULT_STA_PASSWORD "your-password"
 ```
 
 When default credentials are configured:
