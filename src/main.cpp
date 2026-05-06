@@ -1,212 +1,29 @@
-#include <Arduino.h>
-#include <esp_wifi.h>
-#include <soc/rtc_cntl_reg.h>
-#include <driver/i2c.h>
-#include <driver/ledc.h>
-#include <IotWebConf.h>
-#include <IotWebConfTParameter.h>
-#include <OV2640.h>
-#include <ESPmDNS.h>
-#include <rtsp_server.h>
-#include <lookup_camera_effect.h>
-#include <lookup_camera_frame_size.h>
-#include <lookup_camera_gainceiling.h>
-#include <lookup_camera_wb_mode.h>
-#include <format_duration.h>
-#include <format_number.h>
-#include <vector>
-#include <string>
-#include <map>
+#include <WiFi.h>
+#include <WebServer.h>
+#include "esp_camera.h"
+#include "lookup_camera_frame_size.h"
+#include "settings.h"
+#include "secrets.h"
+#include <ArduinoOTA.h>
 
-#include <moustache.h>
-#include <settings.h>
+// ======== GLOBALS ========
+const char* ssid     = DEFAULT_STA_SSID;
+const char* password = DEFAULT_STA_PASSWORD;
 
-// HTML files
-extern const char index_html_min_start[] asm("_binary_html_index_min_html_start");
+const char* ap_ssid = WIFI_SSID;
+const char* ap_pass = WIFI_PASSWORD;
 
-auto param_group_camera = iotwebconf::ParameterGroup("camera", "Camera settings");
-auto param_frame_duration = iotwebconf::Builder<iotwebconf::UIntTParameter<unsigned long>>("fd").label("Frame duration (ms)").defaultValue(DEFAULT_FRAME_DURATION).min(10).build();
-auto param_frame_size = iotwebconf::Builder<iotwebconf::SelectTParameter<sizeof(frame_sizes[0])>>("fs").label("Frame size").optionValues((const char *)&frame_sizes).optionNames((const char *)&frame_sizes).optionCount(sizeof(frame_sizes) / sizeof(frame_sizes[0])).nameLength(sizeof(frame_sizes[0])).defaultValue(DEFAULT_FRAME_SIZE).build();
-auto param_jpg_quality = iotwebconf::Builder<iotwebconf::UIntTParameter<byte>>("q").label("JPG quality").defaultValue(DEFAULT_JPEG_QUALITY).min(1).max(100).build();
-auto param_brightness = iotwebconf::Builder<iotwebconf::IntTParameter<int>>("b").label("Brightness").defaultValue(DEFAULT_BRIGHTNESS).min(-2).max(2).build();
-auto param_contrast = iotwebconf::Builder<iotwebconf::IntTParameter<int>>("c").label("Contrast").defaultValue(DEFAULT_CONTRAST).min(-2).max(2).build();
-auto param_saturation = iotwebconf::Builder<iotwebconf::IntTParameter<int>>("s").label("Saturation").defaultValue(DEFAULT_SATURATION).min(-2).max(2).build();
-auto param_special_effect = iotwebconf::Builder<iotwebconf::SelectTParameter<sizeof(camera_effects[0])>>("e").label("Effect").optionValues((const char *)&camera_effects).optionNames((const char *)&camera_effects).optionCount(sizeof(camera_effects) / sizeof(camera_effects[0])).nameLength(sizeof(camera_effects[0])).defaultValue(DEFAULT_EFFECT).build();
-auto param_whitebal = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("wb").label("White balance").defaultValue(DEFAULT_WHITE_BALANCE).build();
-auto param_awb_gain = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("awbg").label("Automatic white balance gain").defaultValue(DEFAULT_WHITE_BALANCE_GAIN).build();
-auto param_wb_mode = iotwebconf::Builder<iotwebconf::SelectTParameter<sizeof(camera_wb_modes[0])>>("wbm").label("White balance mode").optionValues((const char *)&camera_wb_modes).optionNames((const char *)&camera_wb_modes).optionCount(sizeof(camera_wb_modes) / sizeof(camera_wb_modes[0])).nameLength(sizeof(camera_wb_modes[0])).defaultValue(DEFAULT_WHITE_BALANCE_MODE).build();
-auto param_exposure_ctrl = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("ec").label("Exposure control").defaultValue(DEFAULT_EXPOSURE_CONTROL).build();
-auto param_aec2 = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("aec2").label("Auto exposure (dsp)").defaultValue(DEFAULT_AEC2).build();
-auto param_ae_level = iotwebconf::Builder<iotwebconf::IntTParameter<int>>("ael").label("Auto Exposure level").defaultValue(DEFAULT_AE_LEVEL).min(-2).max(2).build();
-auto param_aec_value = iotwebconf::Builder<iotwebconf::IntTParameter<int>>("aecv").label("Manual exposure value").defaultValue(DEFAULT_AEC_VALUE).min(9).max(1200).build();
-auto param_gain_ctrl = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("gc").label("Gain control").defaultValue(DEFAULT_GAIN_CONTROL).build();
-auto param_agc_gain = iotwebconf::Builder<iotwebconf::IntTParameter<int>>("agcg").label("AGC gain").defaultValue(DEFAULT_AGC_GAIN).min(0).max(30).build();
-auto param_gain_ceiling = iotwebconf::Builder<iotwebconf::SelectTParameter<sizeof(camera_gain_ceilings[0])>>("gcl").label("Auto Gain ceiling").optionValues((const char *)&camera_gain_ceilings).optionNames((const char *)&camera_gain_ceilings).optionCount(sizeof(camera_gain_ceilings) / sizeof(camera_gain_ceilings[0])).nameLength(sizeof(camera_gain_ceilings[0])).defaultValue(DEFAULT_GAIN_CEILING).build();
-auto param_bpc = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("bpc").label("Black pixel correct").defaultValue(DEFAULT_BPC).build();
-auto param_wpc = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("wpc").label("White pixel correct").defaultValue(DEFAULT_WPC).build();
-auto param_raw_gma = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("rg").label("Gamma correct").defaultValue(DEFAULT_RAW_GAMMA).build();
-auto param_lenc = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("lenc").label("Lens correction").defaultValue(DEFAULT_LENC).build();
-auto param_hmirror = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("hm").label("Horizontal mirror").defaultValue(DEFAULT_HORIZONTAL_MIRROR).build();
-auto param_vflip = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("vm").label("Vertical mirror").defaultValue(DEFAULT_VERTICAL_MIRROR).build();
-auto param_dcw = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("dcw").label("Downsize enable").defaultValue(DEFAULT_DCW).build();
-auto param_colorbar = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("cb").label("Colorbar").defaultValue(DEFAULT_COLORBAR).build();
+WebServer server(80);
 
-// Camera
-OV2640 cam;
-// DNS Server
-DNSServer dnsServer;
-// RTSP Server
-std::unique_ptr<rtsp_server> camera_server;
-// Web server
-WebServer web_server(80);
+static volatile uint32_t stream_frames = 0;
+static volatile uint32_t last_framerate = 0;
+static volatile uint32_t server_time = 0;
+static volatile uint32_t loop_time = 0;
+static volatile uint32_t capture_time = 0;
+static volatile uint32_t send_time = 0;
+static uint32_t fps_last_ms = 0;
 
-auto thingName = String(WIFI_SSID) + "-" + String(ESP.getEfuseMac(), 16);
-IotWebConf iotWebConf(thingName.c_str(), &dnsServer, &web_server, WIFI_PASSWORD, CONFIG_VERSION);
-
-// Camera initialization result
-esp_err_t camera_init_result;
-
-void handle_root()
-{
-  log_v("Handle root");
-  // Let IotWebConf test and handle captive portal requests.
-  if (iotWebConf.handleCaptivePortal())
-    return;
-
-  // Format hostname
-  auto hostname = "esp32-" + WiFi.macAddress() + ".local";
-  hostname.replace(":", "");
-  hostname.toLowerCase();
-
-  // Wifi Modes
-  const char *wifi_modes[] = {"NULL", "STA", "AP", "STA+AP"};
-  auto ipv4 = WiFi.getMode() == WIFI_MODE_AP ? WiFi.softAPIP() : WiFi.localIP();
-  auto ipv6 = WiFi.getMode() == WIFI_MODE_AP ? WiFi.softAPIPv6() : WiFi.localIPv6();
-
-  auto initResult = esp_err_to_name(camera_init_result);
-  if (initResult == nullptr)
-    initResult = "Unknown reason";
-
-  moustache_variable_t substitutions[] = {
-      // Version / CPU
-      {"AppTitle", APP_TITLE},
-      {"AppVersion", APP_VERSION},
-      {"BoardType", BOARD_NAME},
-      {"ThingName", iotWebConf.getThingName()},
-      {"SDKVersion", ESP.getSdkVersion()},
-      {"ChipModel", ESP.getChipModel()},
-      {"ChipRevision", String(ESP.getChipRevision())},
-      {"CpuFreqMHz", String(ESP.getCpuFreqMHz())},
-      {"CpuCores", String(ESP.getChipCores())},
-      {"FlashSize", format_memory(ESP.getFlashChipSize(), 0)},
-      {"HeapSize", format_memory(ESP.getHeapSize())},
-      {"PsRamSize", format_memory(ESP.getPsramSize(), 0)},
-      // Diagnostics
-      {"Uptime", String(format_duration(millis() / 1000))},
-      {"FreeHeap", format_memory(ESP.getFreeHeap())},
-      {"MaxAllocHeap", format_memory(ESP.getMaxAllocHeap())},
-      {"NumRTSPSessions", camera_server != nullptr ? String(camera_server->num_connected()) : "RTSP server disabled"},
-      // Network
-      {"HostName", hostname},
-      {"MacAddress", WiFi.macAddress()},
-      {"AccessPoint", WiFi.SSID()},
-      {"SignalStrength", String(WiFi.RSSI())},
-      {"WifiMode", wifi_modes[WiFi.getMode()]},
-      {"IPv4", ipv4.toString()},
-      {"IPv6", ipv6.toString()},
-      {"NetworkState.ApMode", String(iotWebConf.getState() == iotwebconf::NetworkState::ApMode)},
-      {"NetworkState.OnLine", String(iotWebConf.getState() == iotwebconf::NetworkState::OnLine)},
-      // Camera
-      {"FrameSize", String(param_frame_size.value())},
-      {"FrameDuration", String(param_frame_duration.value())},
-      {"FrameFrequency", String(1000.0 / param_frame_duration.value(), 1)},
-      {"JpegQuality", String(param_jpg_quality.value())},
-      {"CameraInitialized", String(camera_init_result == ESP_OK)},
-      {"CameraInitResult", String(camera_init_result)},
-      {"CameraInitResultText", initResult},
-      // Settings
-      {"Brightness", String(param_brightness.value())},
-      {"Contrast", String(param_contrast.value())},
-      {"Saturation", String(param_saturation.value())},
-      {"SpecialEffect", String(param_special_effect.value())},
-      {"WhiteBal", String(param_whitebal.value())},
-      {"AwbGain", String(param_awb_gain.value())},
-      {"WbMode", String(param_wb_mode.value())},
-      {"ExposureCtrl", String(param_exposure_ctrl.value())},
-      {"Aec2", String(param_aec2.value())},
-      {"AeLevel", String(param_ae_level.value())},
-      {"AecValue", String(param_aec_value.value())},
-      {"GainCtrl", String(param_gain_ctrl.value())},
-      {"AgcGain", String(param_agc_gain.value())},
-      {"GainCeiling", String(param_gain_ceiling.value())},
-      {"Bpc", String(param_bpc.value())},
-      {"Wpc", String(param_wpc.value())},
-      {"RawGma", String(param_raw_gma.value())},
-      {"Lenc", String(param_lenc.value())},
-      {"HMirror", String(param_hmirror.value())},
-      {"VFlip", String(param_vflip.value())},
-      {"Dcw", String(param_dcw.value())},
-      {"ColorBar", String(param_colorbar.value())},
-      // RTSP
-      {"RtspPort", String(RTSP_PORT)}};
-
-  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  auto html = moustache_render(index_html_min_start, substitutions);
-  web_server.send(200, "text/html", html);
-}
-
-#ifdef GPIO_AVAILABLE_PINS_STR
-// Parse comma-separated GPIO pins string into vector
-std::vector<int> parse_gpio_pins(const char* pins_str) {
-  std::vector<int> pins;
-  if (!pins_str) return pins;
-  
-  String str = String(pins_str);
-  int start = 0;
-  int comma = str.indexOf(',');
-  while (comma != -1 || start < str.length()) {
-    String pin_str = (comma == -1) ? str.substring(start) : str.substring(start, comma);
-    pin_str.trim();
-    if (pin_str.length() > 0) {
-      pins.push_back(pin_str.toInt());
-    }
-    if (comma == -1) break;
-    start = comma + 1;
-    comma = str.indexOf(',', start);
-  }
-  return pins;
-}
-
-// Parse comma-separated initial states string into vector
-std::vector<int> parse_gpio_states(const char* states_str) {
-  std::vector<int> states;
-  if (!states_str) return states;
-  
-  String str = String(states_str);
-  int start = 0;
-  int comma = str.indexOf(',');
-  while (comma != -1 || start < str.length()) {
-    String state_str = (comma == -1) ? str.substring(start) : str.substring(start, comma);
-    state_str.trim();
-    if (state_str.length() > 0) {
-      states.push_back(state_str.toInt());
-    }
-    if (comma == -1) break;
-    start = comma + 1;
-    comma = str.indexOf(',', start);
-  }
-  return states;
-}
-
-std::vector<int> available_gpio_pins;
-std::vector<int> gpio_initial_states;
-
-// PWM configuration
-std::map<int, int> pwm_channels; // pin -> ledc_channel
-std::map<int, float> gpio_states; // pin -> current state (0.0-1.0)
-int next_ledc_channel = 0;
-const int PWM_FREQUENCY = 5000; // 5kHz for LED dimming
-const int PWM_RESOLUTION = 8;   // 8-bit resolution
+float ledState = 0.0f;  // Current LED state (0.0-1.0)
 
 #if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
 struct NightVisionState {
@@ -220,139 +37,235 @@ NightVisionState nightVision;
 const unsigned long NIGHT_VISION_PULSE_MS = 200;
 #endif
 
-void configure_pwm_pin(int pin) {
-  if (pwm_channels.find(pin) != pwm_channels.end()) {
-    return; // Already configured
-  }
-  
-  int channel = next_ledc_channel++;
-  pwm_channels[pin] = channel;
-  
-  // Ensure pin is configured as output
-  pinMode(pin, OUTPUT);
-  
-  // Configure LEDC timer
-  ledc_timer_config_t ledc_timer = {
-    .speed_mode = LEDC_LOW_SPEED_MODE,
-    .duty_resolution = (ledc_timer_bit_t)PWM_RESOLUTION,
-    .timer_num = LEDC_TIMER_1,
-    .freq_hz = PWM_FREQUENCY,
-    .clk_cfg = LEDC_AUTO_CLK
-  };
-  ledc_timer_config(&ledc_timer);
-  
-  // Configure LEDC channel
-  ledc_channel_config_t ledc_channel = {
-    .gpio_num = pin,
-    .speed_mode = LEDC_LOW_SPEED_MODE,
-    .channel = (ledc_channel_t)channel,
-    .timer_sel = LEDC_TIMER_1,
-    .duty = 0,
-    .hpoint = 0
-  };
-  ledc_channel_config(&ledc_channel);
-  
-  log_i("Configured PWM on GPIO %d with channel %d", pin, channel);
-}
+// OTA
+uint32_t last_ota_status = 0;
+uint32_t last_ota_check = 0;
+volatile bool ota_pending = false;
+#define OTA_CHECK_INTERVAL_MS 1000
 
-void initialize_gpio() {
-  log_v("initialize_gpio");
-  available_gpio_pins = parse_gpio_pins(GPIO_AVAILABLE_PINS_STR);
-  gpio_initial_states = parse_gpio_states(GPIO_INITIAL_STATES_STR);
-  
-  if (available_gpio_pins.size() != gpio_initial_states.size()) {
-    log_e("GPIO configuration error: pins and states count mismatch");
-    return;
-  }
-  
-  for (size_t i = 0; i < available_gpio_pins.size(); i++) {
-    int pin = available_gpio_pins[i];
-    int state = gpio_initial_states[i];
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, state);
-    gpio_states[pin] = state; // Track initial state
-    log_i("Initialized GPIO %d to state %d", pin, state);
-  }
+#define STREAM_CONTENT_BOUNDARY "frame"
 
-#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
-  pinMode(NIGHT_VISION_GPIO_0, OUTPUT);
-  digitalWrite(NIGHT_VISION_GPIO_0, LOW);
-  pinMode(NIGHT_VISION_GPIO_1, OUTPUT);
-  digitalWrite(NIGHT_VISION_GPIO_1, LOW);
-  log_i("Initialized night vision GPIOs %d and %d to LOW", NIGHT_VISION_GPIO_0, NIGHT_VISION_GPIO_1);
-#endif
-}
+// ======== FUNCTION DECLARATIONS ========
+void handleLoop();
 
-void handle_gpio() {
-  log_v("handle_gpio");
-  
-  if (!web_server.hasArg("pin")) {
-    web_server.send(400, "text/plain", "Missing 'pin' parameter");
-    return;
-  }
-  
-  if (!web_server.hasArg("state")) {
-    web_server.send(400, "text/plain", "Missing 'state' parameter");
-    return;
-  }
-  
-  int pin = web_server.arg("pin").toInt();
-  float state = web_server.arg("state").toFloat();
-  
-  // Check if pin is in available pins list
-  bool pin_available = false;
-  for (int available_pin : available_gpio_pins) {
-    if (available_pin == pin) {
-      pin_available = true;
-      break;
+// ======== FPS COUNTER (DEBUG) ========
+void printFPS()
+{
+    if (millis() - fps_last_ms > 1000) {
+        fps_last_ms = millis();
+        Serial.printf("[FPS] stream: %lu\n", (unsigned long)stream_frames);
+        last_framerate = stream_frames;
+        stream_frames = 0;
     }
-  }
-  
-  if (!pin_available) {
-    web_server.send(400, "text/plain", "Pin not available for GPIO control");
-    return;
-  }
-  
-  // Validate state (0.0 to 1.0)
-  if (state < 0.0 || state > 1.0) {
-    web_server.send(400, "text/plain", "Invalid state. Must be between 0.0 and 1.0");
-    return;
-  }
-  
-  // Handle PWM for values between 0.0 and 1.0 (not exactly 0.0 or 1.0)
-  if (state > 0.0 && state < 1.0) {
-    configure_pwm_pin(pin);
-    int channel = pwm_channels[pin];
-    int duty = (int)(state * ((1 << PWM_RESOLUTION) - 1));
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)channel, duty);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)channel);
-    log_i("Set PWM on GPIO %d to %.2f (duty: %d)", pin, state, duty/((float)((1 << PWM_RESOLUTION) - 1)));
-  } else {
-    // Digital write for exact 0.0 or 1.0
-    digitalWrite(pin, state > 0.5 ? HIGH : LOW);
-    log_i("Set GPIO %d to %s", pin, state > 0.5 ? "HIGH" : "LOW");
-  }
-  
-  // Update tracked state
-  gpio_states[pin] = state;
-  
-  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  web_server.send(200, "text/plain", "OK");
 }
-#endif
 
+// ======== WIFI SETUP ========
+void setupWiFi()
+{
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+
+    Serial.print("Connecting to WiFi");
+
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+        delay(500);
+        Serial.print(".");
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nConnected!");
+        Serial.println(WiFi.localIP());
+    } else {
+        Serial.println("\nFailed. Starting AP...");
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP(ap_ssid, ap_pass);
+        Serial.println(WiFi.softAPIP());
+    }
+}
+
+// ======== OTA SETUP ========
+void setupOTA()
+{
+    ArduinoOTA
+    .onStart([]() {
+        ota_pending = true;
+
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH) {
+            type = "sketch";
+        } else {  // U_SPIFFS
+            type = "filesystem";
+        }
+
+        // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+        Serial.println("Start updating " + type);
+    })
+    .onEnd([]() {
+        Serial.println("\nEnd");
+        ota_pending = false;
+    })
+    .onProgress([](unsigned int progress, unsigned int total) {
+        if (millis() - last_ota_status > 500) {
+            Serial.printf("Progress: %u%%\n", (progress / (total / 100)));
+            last_ota_status = millis();
+        }
+    })
+    .onError([](ota_error_t error) {
+        ota_pending = false;
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) {
+            Serial.println("Auth Failed");
+        } else if (error == OTA_BEGIN_ERROR) {
+            Serial.println("Begin Failed");
+        } else if (error == OTA_CONNECT_ERROR) {
+            Serial.println("Connect Failed");
+        } else if (error == OTA_RECEIVE_ERROR) {
+            Serial.println("Receive Failed");
+        } else if (error == OTA_END_ERROR) {
+            Serial.println("End Failed");
+        }
+    });
+
+    ArduinoOTA.begin();
+}
+
+// ======== CAMERA INIT ========
+void initCamera()
+{
+    camera_config_t config;
+    config.ledc_channel = CAMERA_CONFIG_LEDC_CHANNEL;
+    config.ledc_timer   = CAMERA_CONFIG_LEDC_TIMER;
+    config.pin_d0 = CAMERA_CONFIG_PIN_Y2;
+    config.pin_d1 = CAMERA_CONFIG_PIN_Y3;
+    config.pin_d2 = CAMERA_CONFIG_PIN_Y4;
+    config.pin_d3 = CAMERA_CONFIG_PIN_Y5;
+    config.pin_d4 = CAMERA_CONFIG_PIN_Y6;
+    config.pin_d5 = CAMERA_CONFIG_PIN_Y7;
+    config.pin_d6 = CAMERA_CONFIG_PIN_Y8;
+    config.pin_d7 = CAMERA_CONFIG_PIN_Y9;
+    config.pin_xclk = CAMERA_CONFIG_PIN_XCLK;
+    config.pin_pclk = CAMERA_CONFIG_PIN_PCLK;
+    config.pin_vsync = CAMERA_CONFIG_PIN_VSYNC;
+    config.pin_href = CAMERA_CONFIG_PIN_HREF;
+    config.pin_sccb_sda = CAMERA_CONFIG_PIN_SCCB_SDA;
+    config.pin_sccb_scl = CAMERA_CONFIG_PIN_SCCB_SCL;
+    config.pin_pwdn = CAMERA_CONFIG_PIN_PWDN;
+    config.pin_reset = CAMERA_CONFIG_PIN_RESET;
+
+    config.xclk_freq_hz = CAMERA_CONFIG_CLK_FREQ_HZ;
+    config.pixel_format = PIXFORMAT_JPEG;
+
+    config.frame_size = lookup_frame_size(DEFAULT_FRAME_SIZE);
+    config.jpeg_quality = DEFAULT_JPEG_QUALITY;
+    config.fb_count = CAMERA_CONFIG_FB_COUNT;
+
+    esp_err_t err = esp_camera_init(&config);
+    if (err != ESP_OK) {
+        Serial.printf("Camera init failed: 0x%x\n", err);
+        return;
+    }
+    Serial.printf("Camera init successful with frame size %s and JPEG quality %d\n", DEFAULT_FRAME_SIZE, DEFAULT_JPEG_QUALITY);
+}
+
+// ======== MJPEG STREAM HANDLER ========
+void handleStream()
+{
+    WiFiClient client = server.client();
+    client.setNoDelay(true);
+    char size_buf[16];
+
+    // Send HTTP headers
+    client.write("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: multipart/x-mixed-replace; boundary=" STREAM_CONTENT_BOUNDARY "\r\n\r\n");
+
+    while (client.connected() && !ota_pending) {
+        uint32_t start_ms = millis();
+        // Handle other requests
+        server.handleClient();
+
+        server_time = millis() - start_ms;
+
+        // Handle other tasks like night vision timing
+        handleLoop();
+        printFPS();
+        ArduinoOTA.handle();
+
+        loop_time = millis() - start_ms - server_time;
+
+        // Boundary and content-type header
+        client.write("\r\n--" STREAM_CONTENT_BOUNDARY "\r\nContent-Type: image/jpeg\r\nContent-Length: ");
+
+        // Capture frame
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            delay(10);
+            continue;
+        }
+
+        capture_time = millis() - start_ms - loop_time - server_time;
+
+        // Send size
+        snprintf(size_buf, sizeof(size_buf), "%zu\r\n\r\n", fb->len);
+        client.write(size_buf);
+
+        // Send JPEG data
+        client.write(fb->buf, fb->len);
+
+        send_time = millis() - start_ms - capture_time - loop_time - server_time;
+
+        esp_camera_fb_return(fb);
+        stream_frames++;
+    }
+
+    Serial.println("Stream client disconnected");
+    client.stop();
+    last_framerate = 0;
+    stream_frames = 0;
+}
+
+void setupStream()
+{
+    server.on("/stream", handleStream);
+}
+
+// ======== SNAPSHOT HANDLER ========
+void handle_snapshot() {
+    camera_fb_t * fb = esp_camera_fb_get();
+    if (!fb) {
+        server.send(503, "text/plain", "Camera capture failed");
+        return;
+    }
+    auto fb_len = fb->len;
+    const char* fb_content = (const char*)fb->buf;
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    server.setContentLength(fb_len);
+    server.send(200, "image/jpeg", "");
+    server.sendContent(fb_content, fb_len);
+    esp_camera_fb_return(fb);
+}
+
+void setupSnapshot() {
+    server.on("/snapshot", handle_snapshot);
+}
+
+// ======== NIGHT VISION HANDLERS ========
 #if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
-void handle_night_vision() {
-  log_v("handle_night_vision");
+void setupNightVision() {
+  pinMode(NIGHT_VISION_GPIO_0, OUTPUT);
+  pinMode(NIGHT_VISION_GPIO_1, OUTPUT);
+  digitalWrite(NIGHT_VISION_GPIO_0, LOW);
+  digitalWrite(NIGHT_VISION_GPIO_1, LOW);
+}
 
-  if (!web_server.hasArg("state")) {
-    web_server.send(400, "text/plain", "Missing 'state' parameter");
+void handle_night_vision() {
+  if (!server.hasArg("state")) {
+    server.send(400, "text/plain", "Missing 'state' parameter");
     return;
   }
 
-  int state = web_server.arg("state").toInt();
+  int state = server.arg("state").toInt();
   if (state != 0 && state != 1) {
-    web_server.send(400, "text/plain", "Invalid state. Must be 0 or 1");
+    server.send(400, "text/plain", "Invalid state. Must be 0 or 1");
     return;
   }
 
@@ -368,390 +281,126 @@ void handle_night_vision() {
   nightVision.start_ms = millis();
   digitalWrite(pin, HIGH);
 
-  log_i("Night vision state %d triggered on GPIO %d", state, pin);
-  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  web_server.send(200, "text/plain", "OK");
+  Serial.printf("Night vision state %d triggered on GPIO %d\n", state, pin);
+  String resp = "OK state=" + String(state);
+  server.send(200, "text/plain", resp);
+}
+
+void handle_night_vision_state() {
+  String resp = String("{\"state\":") + String(nightVision.state) + "}";
+  server.send(200, "application/json", resp);
 }
 #endif
 
-void handle_snapshot()
+#if defined(IR_LED_PIN)
+void handleIRLED()
 {
-  log_v("handle_snapshot");
-  if (camera_init_result != ESP_OK)
-  {
-    web_server.send(404, "text/plain", "Camera is not initialized");
-    return;
-  }
+    if (!server.hasArg("state")) {
+        server.send(400, "text/plain", "Missing state parameter");
+        return;
+    }
 
-  // Remove old images stored in the frame buffer
-  auto frame_buffers = CAMERA_CONFIG_FB_COUNT;
-  while (frame_buffers--)
-    cam.run();
+    float state = server.arg("state").toFloat();
 
-  auto fb_len = cam.getSize();
-  auto fb = (const char *)cam.getfb();
-  if (fb == nullptr)
-  {
-    web_server.send(404, "text/plain", "Unable to obtain frame buffer from the camera");
-    return;
-  }
+    // constrain to 0.0-1.0
+    state = constrain(state, 0.0f, 1.0f);
 
-  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  web_server.setContentLength(fb_len);
-  web_server.send(200, "image/jpeg", "");
-  web_server.sendContent(fb, fb_len);
+    ledState = state;
+
+    if (state == 0.0f || state == 1.0f) {
+        // DIGITAL MODE
+        ledcDetachPin(IR_LED_PIN);  // safe even if not attached
+        pinMode(IR_LED_PIN, OUTPUT);
+        digitalWrite(IR_LED_PIN, (int)state);
+    } else {
+        // PWM MODE
+        ledcSetup(0, 5000, 8);  // channel 0 for LED
+        ledcAttachPin(IR_LED_PIN, 0);
+        int duty = (int)(state * 255);
+        ledcWrite(0, duty);
+    }
+
+    String resp = "OK state=" + String(state);
+    server.send(200, "text/plain", resp);
 }
 
-#define STREAM_CONTENT_BOUNDARY "123456789000000000000987654321"
-
-void handle_stream()
+void handleIRLEDState()
 {
-  log_v("handle_stream");
-  if (camera_init_result != ESP_OK)
-  {
-    web_server.send(404, "text/plain", "Camera is not initialized");
-    return;
-  }
-
-  log_v("starting streaming");
-  // Blocks further handling of HTTP server until stopped
-  char size_buf[12];
-  auto client = web_server.client();
-  client.write("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: multipart/x-mixed-replace; boundary=" STREAM_CONTENT_BOUNDARY "\r\n");
-  while (client.connected())
-  {
-    client.write("\r\n--" STREAM_CONTENT_BOUNDARY "\r\n");
-    cam.run();
-    client.write("Content-Type: image/jpeg\r\nContent-Length: ");
-    sprintf(size_buf, "%d\r\n\r\n", cam.getSize());
-    client.write(size_buf);
-    client.write(cam.getfb(), cam.getSize());
-  }
-
-  log_v("client disconnected");
-  client.stop();
-  log_v("stopped streaming");
-}
-
-#if defined(GPIO_AVAILABLE_PINS_STR)
-void handle_gpio_status() {
-  log_v("handle_gpio_status");
-  
-  String json = "{";
-  json += "\"gpio_states\":{";
-  
-  bool first = true;
-  for (int pin : available_gpio_pins) {
-    if (!first) json += ",";
-    json += "\"" + String(pin) + "\":" + String(gpio_states[pin], 2);
-    first = false;
-  }
-  
-  json += "}}";
-  
-  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  web_server.send(200, "application/json", json);
+    String resp = "{\"state\":" + String(ledState) + "}";
+    server.send(200, "application/json", resp);
 }
 #endif
+
+// ======== CONTROL ENDPOINTS ========
+void setupControl()
+{
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+    server.on("/nightvision", handle_night_vision);
+    server.on("/nightvision/state", handle_night_vision_state);
+#endif
+
+#if defined(IR_LED_PIN)
+    server.on("/irled", handleIRLED);
+    server.on("/irled/state", handleIRLEDState);
+#endif
+}
+
+// ======== STATUS ENDPOINTS ========
+void setupStatus()
+{
+    server.on("/status", []() {
+        volatile int rssi = WiFi.RSSI();
+        volatile float temp = temperatureRead();
+        String resp = "{\"fps\":" + String(last_framerate) + \
+                        ", \"server_time\":" + String(server_time) + \
+                        ", \"loop_time\":" + String(loop_time) + \
+                        ", \"capture_time\":" + String(capture_time) + \
+                        ", \"send_time\":" + String(send_time) + \
+                        ", \"rssi\":" + String(rssi) + \
+                        ", \"temp\":" + String(temp) + "}";
+        server.send(200, "application/json", resp);
+    });
+}
+
+// ======== LOOP HANDLER ========
+void handleLoop()
+{
+    if (millis() - last_ota_check >= OTA_CHECK_INTERVAL_MS || ota_pending) {
+        ArduinoOTA.handle();
+    }
+
+    server.handleClient();
 
 #if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
-void handle_night_vision_status() {
-  log_v("handle_night_vision_status");
-  
-  String json = "{";
-  json += "\"state\":" + String(nightVision.state);
-  json += "}";
-  
-  web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  web_server.send(200, "application/json", json);
-}
-#endif
-
-esp_err_t initialize_camera()
-{
-  log_v("initialize_camera");
-
-  log_i("Frame size: %s", param_frame_size.value());
-  auto frame_size = lookup_frame_size(param_frame_size.value());
-  log_i("JPEG quality: %d", param_jpg_quality.value());
-  auto jpeg_quality = param_jpg_quality.value();
-  log_i("Frame duration: %d ms", param_frame_duration.value());
-  const camera_config_t camera_config = {
-      .pin_pwdn = CAMERA_CONFIG_PIN_PWDN,         // GPIO pin for camera power down line
-      .pin_reset = CAMERA_CONFIG_PIN_RESET,       // GPIO pin for camera reset line
-      .pin_xclk = CAMERA_CONFIG_PIN_XCLK,         // GPIO pin for camera XCLK line
-      .pin_sccb_sda = CAMERA_CONFIG_PIN_SCCB_SDA, // GPIO pin for camera SDA line
-      .pin_sccb_scl = CAMERA_CONFIG_PIN_SCCB_SCL, // GPIO pin for camera SCL line
-      .pin_d7 = CAMERA_CONFIG_PIN_Y9,             // GPIO pin for camera D7 line
-      .pin_d6 = CAMERA_CONFIG_PIN_Y8,             // GPIO pin for camera D6 line
-      .pin_d5 = CAMERA_CONFIG_PIN_Y7,             // GPIO pin for camera D5 line
-      .pin_d4 = CAMERA_CONFIG_PIN_Y6,             // GPIO pin for camera D4 line
-      .pin_d3 = CAMERA_CONFIG_PIN_Y5,             // GPIO pin for camera D3 line
-      .pin_d2 = CAMERA_CONFIG_PIN_Y4,             // GPIO pin for camera D2 line
-      .pin_d1 = CAMERA_CONFIG_PIN_Y3,             // GPIO pin for camera D1 line
-      .pin_d0 = CAMERA_CONFIG_PIN_Y2,             // GPIO pin for camera D0 line
-      .pin_vsync = CAMERA_CONFIG_PIN_VSYNC,       // GPIO pin for camera VSYNC line
-      .pin_href = CAMERA_CONFIG_PIN_HREF,         // GPIO pin for camera HREF line
-      .pin_pclk = CAMERA_CONFIG_PIN_PCLK,         // GPIO pin for camera PCLK line
-      .xclk_freq_hz = CAMERA_CONFIG_CLK_FREQ_HZ,  // Frequency of XCLK signal, in Hz. EXPERIMENTAL: Set to 16MHz on ESP32-S2 or ESP32-S3 to enable EDMA mode
-      .ledc_timer = CAMERA_CONFIG_LEDC_TIMER,     // LEDC timer to be used for generating XCLK
-      .ledc_channel = CAMERA_CONFIG_LEDC_CHANNEL, // LEDC channel to be used for generating XCLK
-      .pixel_format = PIXFORMAT_JPEG,             // Format of the pixel data: PIXFORMAT_ + YUV422|GRAYSCALE|RGB565|JPEG
-      .frame_size = frame_size,                   // Size of the output image: FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
-      .jpeg_quality = jpeg_quality,               // Quality of JPEG output. 0-63 lower means higher quality
-      .fb_count = CAMERA_CONFIG_FB_COUNT,         // Number of frame buffers to be allocated. If more than one, then each frame will be acquired (double speed)
-      .fb_location = CAMERA_CONFIG_FB_LOCATION,   // The location where the frame buffer will be allocated
-      .grab_mode = CAMERA_GRAB_LATEST,            // When buffers should be filled
-#if CONFIG_CAMERA_CONVERTER_ENABLED
-      conv_mode = CONV_DISABLE, // RGB<->YUV Conversion mode
-#endif
-      .sccb_i2c_port = SCCB_I2C_PORT // If pin_sccb_sda is -1, use the already configured I2C bus by number
-  };
-
-  return cam.init(camera_config);
-}
-
-void update_camera_settings()
-{
-  auto camera = esp_camera_sensor_get();
-  if (camera == nullptr)
-  {
-    log_e("Unable to get camera sensor");
-    return;
-  }
-
-  camera->set_brightness(camera, param_brightness.value());
-  camera->set_contrast(camera, param_contrast.value());
-  camera->set_saturation(camera, param_saturation.value());
-  camera->set_special_effect(camera, lookup_camera_effect(param_special_effect.value()));
-  camera->set_whitebal(camera, param_whitebal.value());
-  camera->set_awb_gain(camera, param_awb_gain.value());
-  camera->set_wb_mode(camera, lookup_camera_wb_mode(param_wb_mode.value()));
-  camera->set_exposure_ctrl(camera, param_exposure_ctrl.value());
-  camera->set_aec2(camera, param_aec2.value());
-  camera->set_ae_level(camera, param_ae_level.value());
-  camera->set_aec_value(camera, param_aec_value.value());
-  camera->set_gain_ctrl(camera, param_gain_ctrl.value());
-  camera->set_agc_gain(camera, param_agc_gain.value());
-  camera->set_gainceiling(camera, lookup_camera_gainceiling(param_gain_ceiling.value()));
-  camera->set_bpc(camera, param_bpc.value());
-  camera->set_wpc(camera, param_wpc.value());
-  camera->set_raw_gma(camera, param_raw_gma.value());
-  camera->set_lenc(camera, param_lenc.value());
-  camera->set_hmirror(camera, param_hmirror.value());
-  camera->set_vflip(camera, param_vflip.value());
-  camera->set_dcw(camera, param_dcw.value());
-  camera->set_colorbar(camera, param_colorbar.value());
-}
-
-static bool has_default_wifi_credentials()
-{
-  return strlen(DEFAULT_STA_SSID) > 0 && strlen(DEFAULT_STA_PASSWORD) > 0;
-}
-
-static bool connect_default_wifi()
-{
-  if (!has_default_wifi_credentials())
-    return false;
-
-  log_i("Attempting to connect to default WiFi '%s'", DEFAULT_STA_SSID);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(DEFAULT_STA_SSID, DEFAULT_STA_PASSWORD);
-
-  auto start = millis();
-  while (millis() - start < DEFAULT_STA_CONNECT_TIMEOUT)
-  {
-    if (WiFi.status() == WL_CONNECTED)
-    {
-      log_i("Connected to default WiFi, IP %s", WiFi.localIP().toString().c_str());
-      return true;
+    if (nightVision.active && millis() - nightVision.start_ms >= NIGHT_VISION_PULSE_MS) {
+        digitalWrite(nightVision.pin, LOW);
+        nightVision.active = false;
+        Serial.printf("Night vision state %d on GPIO %d deactivated after pulse\n", nightVision.state, nightVision.pin);
     }
-    delay(200);
-  }
-
-  log_e("Default WiFi connection failed");
-  return false;
+#endif
 }
 
-static void start_ap_fallback()
-{
-  log_i("Starting fallback AP mode");
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_AP);
-
-  const char *apPassword = WIFI_PASSWORD;
-  if (apPassword != nullptr && apPassword[0] != '\0')
-  {
-    WiFi.softAP(WIFI_SSID, apPassword);
-  }
-  else
-  {
-    WiFi.softAP(WIFI_SSID);
-  }
-}
-
-void start_rtsp_server()
-{
-  if (camera_server)
-    return;
-
-  log_v("start_rtsp_server");
-  camera_server = std::unique_ptr<rtsp_server>(new rtsp_server(cam, param_frame_duration.value(), RTSP_PORT));
-  // Add RTSP service to mDNS
-  // HTTP is already set by iotWebConf
-  MDNS.addService("rtsp", "tcp", RTSP_PORT);
-}
-
-void on_connected()
-{
-  log_v("on_connected");
-  // Start the RTSP Server if initialized
-  if (camera_init_result == ESP_OK)
-    start_rtsp_server();
-  else
-    log_e("Not starting RTSP server: camera not initialized");
-}
-
-void on_config_saved()
-{
-  log_v("on_config_saved");
-  update_camera_settings();
-}
-
+// ======== SETUP ========
 void setup()
 {
-  // Disable brownout
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+    Serial.begin(921600);
 
-  Serial.begin(115200);
-  Serial.setDebugOutput(true);
-#ifdef CAMERA_POWER_GPIO
-  pinMode(CAMERA_POWER_GPIO, OUTPUT);
-  digitalWrite(CAMERA_POWER_GPIO, CAMERA_POWER_ON_LEVEL);
-#endif
+    setupWiFi();
+    setupNightVision();
+    initCamera();
+    setupStream();
+    setupSnapshot();
+    setupControl();
+    setupStatus();
 
-#ifdef USER_LED_GPIO
-  pinMode(USER_LED_GPIO, OUTPUT);
-  digitalWrite(USER_LED_GPIO, !USER_LED_ON_LEVEL);
-#endif
+    ArduinoOTA.begin();
+    server.begin();
 
-#ifdef GPIO_AVAILABLE_PINS_STR
-  initialize_gpio();
-#endif
-
-#ifdef ARDUINO_USB_CDC_ON_BOOT
-  // Delay for USB to connect/settle
-  delay(5000);
-#endif
-
-  log_i("Core debug level: %d", CORE_DEBUG_LEVEL);
-  log_i("CPU Freq: %d Mhz, %d core(s)", getCpuFrequencyMhz(), ESP.getChipCores());
-  log_i("Free heap: %d bytes", ESP.getFreeHeap());
-  log_i("SDK version: %s", ESP.getSdkVersion());
-  log_i("Board: %s", BOARD_NAME);
-  log_i("Starting " APP_TITLE "...");
-
-  if (CAMERA_CONFIG_FB_LOCATION == CAMERA_FB_IN_PSRAM && !psramInit())
-    log_e("Failed to initialize PSRAM");
-
-  param_group_camera.addItem(&param_frame_duration);
-  param_group_camera.addItem(&param_frame_size);
-  param_group_camera.addItem(&param_jpg_quality);
-  param_group_camera.addItem(&param_brightness);
-  param_group_camera.addItem(&param_contrast);
-  param_group_camera.addItem(&param_saturation);
-  param_group_camera.addItem(&param_special_effect);
-  param_group_camera.addItem(&param_whitebal);
-  param_group_camera.addItem(&param_awb_gain);
-  param_group_camera.addItem(&param_wb_mode);
-  param_group_camera.addItem(&param_exposure_ctrl);
-  param_group_camera.addItem(&param_aec2);
-  param_group_camera.addItem(&param_ae_level);
-  param_group_camera.addItem(&param_aec_value);
-  param_group_camera.addItem(&param_gain_ctrl);
-  param_group_camera.addItem(&param_agc_gain);
-  param_group_camera.addItem(&param_gain_ceiling);
-  param_group_camera.addItem(&param_bpc);
-  param_group_camera.addItem(&param_wpc);
-  param_group_camera.addItem(&param_raw_gma);
-  param_group_camera.addItem(&param_lenc);
-  param_group_camera.addItem(&param_hmirror);
-  param_group_camera.addItem(&param_vflip);
-  param_group_camera.addItem(&param_dcw);
-  param_group_camera.addItem(&param_colorbar);
-  iotWebConf.addParameterGroup(&param_group_camera);
-
-  iotWebConf.getApTimeoutParameter()->visible = true;
-  iotWebConf.setConfigSavedCallback(on_config_saved);
-  iotWebConf.setWifiConnectionCallback(on_connected);
-#ifdef USER_LED_GPIO
-  iotWebConf.setStatusPin(USER_LED_GPIO, USER_LED_ON_LEVEL);
-#endif
-
-  bool default_wifi_connected = false;
-  if (has_default_wifi_credentials())
-  {
-    default_wifi_connected = connect_default_wifi();
-    if (!default_wifi_connected)
-      start_ap_fallback();
-  }
-
-  iotWebConf.init();
-
-  // Try to initialize 3 times
-  for (auto i = 0; i < 3; i++)
-  {
-    camera_init_result = initialize_camera();
-    if (camera_init_result == ESP_OK)
-    {
-      update_camera_settings();
-      break;
-    }
-
-    esp_camera_deinit();
-    log_e("Failed to initialize camera. Error: 0x%0x. Frame size: %s, frame rate: %d ms, jpeg quality: %d", camera_init_result, param_frame_size.value(), param_frame_duration.value(), param_jpg_quality.value());
-    delay(500);
-  }
-
-  if (default_wifi_connected && camera_init_result == ESP_OK)
-  {
-    start_rtsp_server();
-  }
-
-  // Set up required URL handlers on the web server
-  web_server.on("/", HTTP_GET, handle_root);
-  web_server.on("/config", []
-                { iotWebConf.handleConfig(); });
-  // Camera snapshot
-  web_server.on("/snapshot", HTTP_GET, handle_snapshot);
-  // Camera stream
-  web_server.on("/stream", HTTP_GET, handle_stream);
-#ifdef GPIO_AVAILABLE_PINS_STR
-  // GPIO control
-  web_server.on("/gpio", HTTP_GET, handle_gpio);
-  // GPIO status
-  web_server.on("/gpio/status", HTTP_GET, handle_gpio_status);
-#endif
-#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
-  web_server.on("/night_vision", HTTP_GET, handle_night_vision);
-  // Night vision status
-  web_server.on("/night_vision/status", HTTP_GET, handle_night_vision_status);
-#endif
-  web_server.onNotFound([]()
-                        { iotWebConf.handleNotFound(); });
+    Serial.println("Server started");
 }
 
+// ======== LOOP ========
 void loop()
 {
-  iotWebConf.doLoop();
-
-#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
-  if (nightVision.active && millis() - nightVision.start_ms >= NIGHT_VISION_PULSE_MS) {
-    digitalWrite(nightVision.pin, LOW);
-    nightVision.active = false;
-  }
-#endif
-
-  if (camera_server)
-    camera_server->doLoop();
+    handleLoop();
 }
