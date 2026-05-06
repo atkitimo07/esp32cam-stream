@@ -17,6 +17,10 @@ WebServer server(80);
 
 static volatile uint32_t stream_frames = 0;
 static volatile uint32_t last_framerate = 0;
+static volatile uint32_t server_time = 0;
+static volatile uint32_t loop_time = 0;
+static volatile uint32_t capture_time = 0;
+static volatile uint32_t send_time = 0;
 static uint32_t fps_last_ms = 0;
 
 float ledState = 0.0f;  // Current LED state (0.0-1.0)
@@ -168,19 +172,25 @@ void initCamera()
 void handleStream()
 {
     WiFiClient client = server.client();
+    client.setNoDelay(true);
     char size_buf[16];
 
     // Send HTTP headers
     client.write("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: multipart/x-mixed-replace; boundary=" STREAM_CONTENT_BOUNDARY "\r\n\r\n");
 
     while (client.connected() && !ota_pending) {
-        // Yield to allow WebServer to handle other requests
+        uint32_t start_ms = millis();
+        // Handle other requests
         server.handleClient();
+
+        server_time = millis() - start_ms;
 
         // Handle other tasks like night vision timing
         handleLoop();
         printFPS();
         ArduinoOTA.handle();
+
+        loop_time = millis() - start_ms - server_time;
 
         // Boundary and content-type header
         client.write("\r\n--" STREAM_CONTENT_BOUNDARY "\r\nContent-Type: image/jpeg\r\nContent-Length: ");
@@ -192,12 +202,16 @@ void handleStream()
             continue;
         }
 
+        capture_time = millis() - start_ms - loop_time - server_time;
+
         // Send size
         snprintf(size_buf, sizeof(size_buf), "%zu\r\n\r\n", fb->len);
         client.write(size_buf);
 
         // Send JPEG data
         client.write(fb->buf, fb->len);
+
+        send_time = millis() - start_ms - capture_time - loop_time - server_time;
 
         esp_camera_fb_return(fb);
         stream_frames++;
@@ -338,6 +352,10 @@ void setupStatus()
         volatile int rssi = WiFi.RSSI();
         volatile float temp = temperatureRead();
         String resp = "{\"fps\":" + String(last_framerate) + \
+                        ", \"server_time\":" + String(server_time) + \
+                        ", \"loop_time\":" + String(loop_time) + \
+                        ", \"capture_time\":" + String(capture_time) + \
+                        ", \"send_time\":" + String(send_time) + \
                         ", \"rssi\":" + String(rssi) + \
                         ", \"temp\":" + String(temp) + "}";
         server.send(200, "application/json", resp);
