@@ -126,13 +126,13 @@ Once the device is deployed and connected to your network, you can update the fi
 To upload firmware via OTA using PlatformIO:
 
 ```sh
-pio run -t upload --upload-port esp32cam-stream.local
+pio run -t upload --upload-port <ip_address_of_device>
 ```
 
 Or for a specific board environment:
 
 ```sh
-pio run -e esp32cam_ai_thinker -t upload --upload-port esp32cam-stream.local
+pio run -e esp32cam_ai_thinker -t upload --upload-port <ip_address_of_device>
 ```
 
 ### Using Arduino IDE
@@ -141,7 +141,7 @@ If using Arduino IDE with the ESP32 board support:
 
 1. Select your ESP32 board
 2. Go to Tools → Port → Network ports
-3. Select `esp32cam-stream.local` (or the IP address if mDNS doesn't work)
+3. Select `<ip_address_of_device>` (or the IP address if mDNS doesn't work)
 4. Upload as normal
 
 ### OTA Security
@@ -166,13 +166,13 @@ The device connects to WiFi using credentials defined in `include/secrets.h`:
 - `DEFAULT_STA_PASSWORD`: Your WiFi password
 - `WIFI_PASSWORD`: Password for the access point mode
 
-If valid WiFi credentials are provided, the device will connect to your network and be accessible at `http://esp32cam-stream.local/stream`.
+If valid WiFi credentials are provided, the device will connect to your network and be accessible at `http://<ip_address_of_device>/stream`.
 
 If WiFi connection fails, the device creates an access point named "ESP32CAM-STREAM" with the password defined in `WIFI_PASSWORD`.
 
 ## Connecting to the MJPEG stream
 
-The MJPEG stream is available at: [http://esp32cam-stream.local/stream](http://esp32cam-stream.local/stream)
+The MJPEG stream is available at: [http://<ip_address_of_device>/stream](http://<ip_address_of_device>/stream)
 
 Open this URL in any web browser to view the live camera feed.
 
@@ -191,7 +191,9 @@ Triggers a night vision light pulse. The state parameter accepts 0 or 1:
 - `state=1`: Pulses GPIO_1 for 200ms (IR filter control)
 
 Example:
-- `http://esp32cam-stream.local/nightvision?state=0`
+- `http://<ip_address_of_device>/nightvision?state=0`
+- `curl "http://<ip_address>/nightvision?state=0"`
+- `curl "http://<ip_address>/nightvision?state=1"`
 
 ### GET: /nightvision/state
 
@@ -202,6 +204,9 @@ Example response:
 {"state": 0}
 ```
 
+Example:
+- `curl "http://<ip_address>/nightvision/state"`
+
 ### GET: /irled?state=<state>
 
 Controls the IR LED. The state parameter accepts 0.0 to 1.0:
@@ -210,7 +215,10 @@ Controls the IR LED. The state parameter accepts 0.0 to 1.0:
 - Between these values (eg. 0.5): PWM dimming
 
 Example:
-- `http://esp32cam-stream.local/irled?state=1` (IR LED on)
+- `http://<ip_address_of_device>/irled?state=1` (IR LED on)
+- `curl "http://<ip_address>/irled?state=0"`
+- `curl "http://<ip_address>/irled?state=0.5"`
+- `curl "http://<ip_address>/irled?state=1"`
 
 ### GET: /irled/state
 
@@ -220,6 +228,21 @@ Example response:
 ```json
 {"state": 0.5}
 ```
+
+Example:
+- `curl "http://<ip_address>/irled/state"`
+
+### GET: /status
+
+Returns the status of the device as JSON.
+
+Example response:
+```json
+{"fps":4, "rssi":-63, "temp":54.44}
+```
+
+Example:
+- `curl "http://<ip_address>/status"`
 
 ## Default WiFi Credentials
 

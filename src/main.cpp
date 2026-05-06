@@ -6,20 +6,17 @@
 #include "secrets.h"
 #include <ArduinoOTA.h>
 
-// ======== USER CONFIG ========
+// ======== GLOBALS ========
 const char* ssid     = DEFAULT_STA_SSID;
 const char* password = DEFAULT_STA_PASSWORD;
 
 const char* ap_ssid = WIFI_SSID;
 const char* ap_pass = WIFI_PASSWORD;
 
-
-
-uint32_t last_ota_time = 0;
-
 WebServer server(80);
 
 static volatile uint32_t stream_frames = 0;
+static volatile uint32_t last_framerate = 0;
 static uint32_t fps_last_ms = 0;
 
 float ledState = 0.0f;  // Current LED state (0.0-1.0)
@@ -36,17 +33,26 @@ NightVisionState nightVision;
 const unsigned long NIGHT_VISION_PULSE_MS = 200;
 #endif
 
+// OTA
+uint32_t last_ota_status = 0;
+uint32_t last_ota_check = 0;
+volatile bool ota_pending = false;
+#define OTA_CHECK_INTERVAL_MS 1000
+
 #define STREAM_CONTENT_BOUNDARY "frame"
 
+// ======== FUNCTION DECLARATIONS ========
 void handleLoop();
 
 // ======== FPS COUNTER (DEBUG) ========
 void printFPS()
 {
-    if (millis() - fps_last_ms < 1000) return;
-    fps_last_ms = millis();
-    Serial.printf("[FPS] stream: %lu\n", (unsigned long)stream_frames);
-    stream_frames = 0;
+    if (millis() - fps_last_ms > 1000) {
+        fps_last_ms = millis();
+        Serial.printf("[FPS] stream: %lu\n", (unsigned long)stream_frames);
+        last_framerate = stream_frames;
+        stream_frames = 0;
+    }
 }
 
 // ======== WIFI SETUP ========
@@ -79,6 +85,8 @@ void setupOTA()
 {
     ArduinoOTA
     .onStart([]() {
+        ota_pending = true;
+
         String type;
         if (ArduinoOTA.getCommand() == U_FLASH) {
             type = "sketch";
@@ -91,14 +99,16 @@ void setupOTA()
     })
     .onEnd([]() {
         Serial.println("\nEnd");
+        ota_pending = false;
     })
     .onProgress([](unsigned int progress, unsigned int total) {
-        if (millis() - last_ota_time > 500) {
+        if (millis() - last_ota_status > 500) {
             Serial.printf("Progress: %u%%\n", (progress / (total / 100)));
-            last_ota_time = millis();
+            last_ota_status = millis();
         }
     })
     .onError([](ota_error_t error) {
+        ota_pending = false;
         Serial.printf("Error[%u]: ", error);
         if (error == OTA_AUTH_ERROR) {
             Serial.println("Auth Failed");
@@ -163,13 +173,14 @@ void handleStream()
     // Send HTTP headers
     client.write("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: multipart/x-mixed-replace; boundary=" STREAM_CONTENT_BOUNDARY "\r\n\r\n");
 
-    while (client.connected()) {
+    while (client.connected() && !ota_pending) {
         // Yield to allow WebServer to handle other requests
         server.handleClient();
 
         // Handle other tasks like night vision timing
         handleLoop();
         printFPS();
+        ArduinoOTA.handle();
 
         // Boundary and content-type header
         client.write("\r\n--" STREAM_CONTENT_BOUNDARY "\r\nContent-Type: image/jpeg\r\nContent-Length: ");
@@ -194,11 +205,33 @@ void handleStream()
 
     Serial.println("Stream client disconnected");
     client.stop();
+    last_framerate = 0;
+    stream_frames = 0;
 }
 
 void setupStream()
 {
     server.on("/stream", handleStream);
+}
+
+// ======== SNAPSHOT HANDLER ========
+void handle_snapshot() {
+    camera_fb_t * fb = esp_camera_fb_get();
+    if (!fb) {
+        server.send(503, "text/plain", "Camera capture failed");
+        return;
+    }
+    auto fb_len = fb->len;
+    const char* fb_content = (const char*)fb->buf;
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    server.setContentLength(fb_len);
+    server.send(200, "image/jpeg", "");
+    server.sendContent(fb_content, fb_len);
+    esp_camera_fb_return(fb);
+}
+
+void setupSnapshot() {
+    server.on("/snapshot", handle_snapshot);
 }
 
 // ======== NIGHT VISION HANDLERS ========
@@ -298,9 +331,28 @@ void setupControl()
 #endif
 }
 
+// ======== STATUS ENDPOINTS ========
+void setupStatus()
+{
+    server.on("/status", []() {
+        volatile int rssi = WiFi.RSSI();
+        volatile float temp = temperatureRead();
+        String resp = "{\"fps\":" + String(last_framerate) + \
+                        ", \"rssi\":" + String(rssi) + \
+                        ", \"temp\":" + String(temp) + "}";
+        server.send(200, "application/json", resp);
+    });
+}
+
 // ======== LOOP HANDLER ========
 void handleLoop()
 {
+    if (millis() - last_ota_check >= OTA_CHECK_INTERVAL_MS || ota_pending) {
+        ArduinoOTA.handle();
+    }
+
+    server.handleClient();
+
 #if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
     if (nightVision.active && millis() - nightVision.start_ms >= NIGHT_VISION_PULSE_MS) {
         digitalWrite(nightVision.pin, LOW);
@@ -319,7 +371,9 @@ void setup()
     setupNightVision();
     initCamera();
     setupStream();
+    setupSnapshot();
     setupControl();
+    setupStatus();
 
     ArduinoOTA.begin();
     server.begin();
@@ -330,9 +384,5 @@ void setup()
 // ======== LOOP ========
 void loop()
 {
-    ArduinoOTA.handle();
-    server.handleClient();
-#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
     handleLoop();
-#endif
 }
