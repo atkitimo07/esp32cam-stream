@@ -203,6 +203,13 @@ void setupStream()
 
 // ======== NIGHT VISION HANDLERS ========
 #if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
+void setupNightVision() {
+  pinMode(NIGHT_VISION_GPIO_0, OUTPUT);
+  pinMode(NIGHT_VISION_GPIO_1, OUTPUT);
+  digitalWrite(NIGHT_VISION_GPIO_0, LOW);
+  digitalWrite(NIGHT_VISION_GPIO_1, LOW);
+}
+
 void handle_night_vision() {
   if (!server.hasArg("state")) {
     server.send(400, "text/plain", "Missing 'state' parameter");
@@ -309,10 +316,12 @@ void setup()
     Serial.begin(921600);
 
     setupWiFi();
+    setupNightVision();
     initCamera();
     setupStream();
     setupControl();
 
+    ArduinoOTA.begin();
     server.begin();
 
     Serial.println("Server started");
@@ -323,5 +332,7 @@ void loop()
 {
     ArduinoOTA.handle();
     server.handleClient();
+#if defined(NIGHT_VISION_GPIO_0) && defined(NIGHT_VISION_GPIO_1)
     handleLoop();
+#endif
 }
