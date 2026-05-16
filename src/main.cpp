@@ -10,7 +10,8 @@
 const char* ssid     = DEFAULT_STA_SSID;
 const char* password = DEFAULT_STA_PASSWORD;
 
-const char* ap_ssid = WIFI_SSID;
+const char* device_name = DEVICE_NAME;
+const char* ap_ssid = DEVICE_NAME;
 const char* ap_pass = WIFI_PASSWORD;
 
 WebServer server(80);
@@ -62,10 +63,13 @@ void printFPS()
 // ======== WIFI SETUP ========
 void setupWiFi()
 {
+    WiFi.setHostname(device_name);
     WiFi.mode(WIFI_STA);
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    WiFi.setHostname(device_name);
     WiFi.begin(ssid, password);
 
-    Serial.print("Connecting to WiFi");
+    Serial.printf("Connecting to WiFi as %s", device_name);
 
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
@@ -75,11 +79,14 @@ void setupWiFi()
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("\nConnected!");
+        Serial.printf("Hostname: %s\n", WiFi.getHostname());
         Serial.println(WiFi.localIP());
     } else {
         Serial.println("\nFailed. Starting AP...");
         WiFi.mode(WIFI_AP);
+        WiFi.softAPsetHostname(device_name);
         WiFi.softAP(ap_ssid, ap_pass);
+        Serial.printf("AP SSID: %s\n", ap_ssid);
         Serial.println(WiFi.softAPIP());
     }
 }
@@ -87,6 +94,8 @@ void setupWiFi()
 // ======== OTA SETUP ========
 void setupOTA()
 {
+    ArduinoOTA.setHostname(device_name);
+
     ArduinoOTA
     .onStart([]() {
         ota_pending = true;
@@ -393,7 +402,7 @@ void setup()
     setupControl();
     setupStatus();
 
-    ArduinoOTA.begin();
+    setupOTA();
     server.begin();
 
     Serial.println("Server started");

@@ -166,9 +166,13 @@ The device connects to WiFi using credentials defined in `include/secrets.h`:
 - `DEFAULT_STA_PASSWORD`: Your WiFi password
 - `WIFI_PASSWORD`: Password for the access point mode
 
+The device name is defined in `include/settings.h`:
+
+- `DEVICE_NAME`: Hostname advertised to the router in station mode, OTA hostname, and access point SSID when station mode fails
+
 If valid WiFi credentials are provided, the device will connect to your network and be accessible at `http://<ip_address_of_device>/stream`.
 
-If WiFi connection fails, the device creates an access point named "ESP32CAM-STREAM" with the password defined in `WIFI_PASSWORD`.
+If WiFi connection fails, the device creates an access point named according to `DEVICE_NAME` with the password defined in `WIFI_PASSWORD`.
 
 ## Connecting to the MJPEG stream
 
@@ -261,7 +265,7 @@ When default credentials are configured:
 
 ## Troubleshooting
 
-- If the device doesn't connect to WiFi, it will create an access point named "ESP32CAM-STREAM"
+- If the device doesn't connect to WiFi, it will create an access point named according to `DEVICE_NAME`
 - Check the credentials in `include/secrets.h`
 - The camera LED indicates connection status (may vary by board)
 - If camera fails to initialize, check PSRAM availability and camera module connection
